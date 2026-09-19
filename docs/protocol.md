@@ -8,6 +8,49 @@ The launcher uses a custom Responses provider and the installed binary's bundled
 
 Live acceptance: stock Codex 0.155.1 created a Rust file, patched it, ran tests, and completed two interactive turns with three passing tests, then resumed the session and recalled its test cases. No Codex patch was needed. Historical strict-mode failures and provider differences below remain useful evidence, not a statement that the compatibility launcher rejects all Codex sessions.
 
+Model-selector acceptance: the custom catalog preserves Astra's instruction templates,
+code mode, Responses Lite, and v2 tool configuration while exposing the routing label
+`gpt-6-astra-devin`. `/model` offered Low, Medium, High, Extra high and Max, without
+Ultra. Switching to High completed live inference. The selector wrote the separate
+`devin-codex` profile; the base Codex config hash was unchanged. The alias is normalized
+only at the adapter boundary, and response events retain the visible alias. It does
+not independently attest the backend model identity.
+
+Delegation initially failed because the collaboration message schema requested
+`encrypted: true`. The gateway honored that marker, but its chat history cannot
+represent Codex's encrypted agent-message item. Codex already has a native plaintext
+path: [`ToolCall::direct_source`](https://github.com/openai/codex/blob/rust-v0.155.1/codex-rs/core/src/tools/router.rs)
+selects it when collaboration `spawn_agent`, `send_message`, or `followup_task`
+returns `encrypted_function_args: []`.
+
+Compatibility mode now removes only those message-schema encryption markers and
+returns the empty argument-encryption marker. It retains the v2 harness and converts
+plaintext agent messages with sender/recipient identity. This is a plaintext transport
+choice, not decryption; old encrypted messages still fail explicitly. Other tool
+schemas, HTTPS, and opaque reasoning signatures are unchanged. The source confirms
+provider inheritance in
+[`build_agent_shared_config`](https://github.com/openai/codex/blob/rust-v0.155.1/codex-rs/core/src/tools/handlers/multi_agents_common.rs).
+
+Live delegation passed a fresh child task and a follow-up on that child. A second
+TUI test spawned two children with full history before waiting; each edited a different
+Rust module and sent progress messages. The parent ran all four fixture tests
+successfully. Session records confirmed the Devin provider and plaintext handoffs.
+
+Compaction uses Codex's local summarization path. A tool-heavy session initially
+failed because historical tool calls were required to have current definitions and
+nullable reasoning content was rejected. Both are now supported without advertising
+historical tools for new calls; current output-tool validation remains unchanged.
+Manual compaction then completed. A child reply arriving during a parent turn also
+exposed standalone signed reasoning with no subsequent assistant item. Compatibility
+mode now represents that reasoning-only turn with an empty assistant boundary before
+a user/agent message or EOF, preserving the opaque signature without attaching it to
+someone else's message. It does not invent assistant text or decrypt reasoning.
+The session was resumed again with a test-only 1,000-token auto-compaction threshold.
+Automatic compaction ran before inference and after tool execution; the parent retained
+the marker and existing child's Unicode conclusion, reran all four tests, and completed.
+The launcher does not change the production threshold. This is not native remote
+compaction or proof of unbounded long-session reliability.
+
 Live prompts were synthetic. Private captures and credentials are not included.
 
 ## Gateway tests

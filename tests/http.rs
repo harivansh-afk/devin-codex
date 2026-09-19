@@ -4,7 +4,12 @@ use axum::{
     http::{Request, StatusCode},
     routing::post,
 };
-use devin_codex::{config::Credentials, gateway::GatewayClient, proto::ChatResponse, server};
+use devin_codex::{
+    config::Credentials,
+    gateway::GatewayClient,
+    proto::{ChatRequest, ChatResponse, ToolCall},
+    server,
+};
 use prost::Message;
 use serde_json::{Value, json};
 use std::sync::{
@@ -16,6 +21,12 @@ use tower::ServiceExt;
 const TOKEN: &str = "synthetic-private-test-token";
 
 async fn app() -> (Router, Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
+    app_with_mode(false).await
+}
+
+async fn app_with_mode(
+    compatibility: bool,
+) -> (Router, Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
     let calls = Arc::new(AtomicUsize::new(0));
     let counter = calls.clone();
     let upstream = Router::new().route(
@@ -31,12 +42,37 @@ async fn app() -> (Router, Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
                     );
                     assert!(headers.get("chatgpt-account-id").is_none());
                     assert_eq!(body[0], 0);
-                    let response = ChatResponse {
+                    let request = ChatRequest::decode(&body[5..]).unwrap();
+                    let mut response = ChatResponse {
                         delta_text: "hello".into(),
                         phase: "final_answer".into(),
+                        actual_model_uid: request.model.clone(),
                         ..Default::default()
+                    };
+                    if let Some(tool) = request.tools.first() {
+                        assert_eq!(tool.name, "collaboration__spawn_agent");
+                        let schema: Value = serde_json::from_str(&tool.parameters_json).unwrap();
+                        assert!(schema["properties"]["message"].get("encrypted").is_none());
+                        if !request.messages.iter().any(|message| message.role == 4) {
+                            response.delta_text.clear();
+                            response.delta_tool_calls.push(ToolCall {
+                                id: "call-child".into(),
+                                name: tool.name.clone(),
+                                arguments_json:
+                                    "{\"message\":\"Reply CHILD_OK\",\"task_name\":\"probe\"}"
+                                        .into(),
+                                ..Default::default()
+                            });
+                        } else {
+                            assert!(
+                                request
+                                    .messages
+                                    .iter()
+                                    .any(|message| message.content.contains("CHILD_OK"))
+                            );
+                        }
                     }
-                    .encode_to_vec();
+                    let response = response.encode_to_vec();
                     let mut framed = vec![0];
                     framed.extend_from_slice(&(response.len() as u32).to_be_bytes());
                     framed.extend(response);
@@ -59,7 +95,7 @@ async fn app() -> (Router, Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
     };
     let gateway = GatewayClient::new(&endpoint, &credentials.api_key).unwrap();
     (
-        server::router(credentials, TOKEN.into(), gateway),
+        server::router_with_mode(credentials, TOKEN.into(), gateway, compatibility),
         calls,
         task,
     )
@@ -123,6 +159,76 @@ async fn authenticated_json_and_compressed_sse_roundtrip() {
     assert!(text.contains("response.completed"));
     assert!(!text.contains("response.failed"));
     assert_eq!(calls.load(Ordering::SeqCst), 2);
+    task.abort();
+}
+
+#[tokio::test]
+async fn collaboration_plaintext_sse_and_history_roundtrip() {
+    let (app, calls, task) = app_with_mode(true).await;
+    let mut body = json!({"model":"gpt-6-astra-devin","input":"delegate","stream":true,"tools":[{
+        "type":"namespace","name":"collaboration","tools":[{
+            "type":"function","name":"spawn_agent","parameters":{
+                "type":"object","properties":{"message":{"type":"string","encrypted":true},"task_name":{"type":"string"}}
+            }
+        }]
+    }]});
+    let response = app.clone().oneshot(request(body.clone())).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = to_bytes(response.into_body(), 65536).await.unwrap();
+    let text = String::from_utf8(bytes.to_vec()).unwrap();
+    let events: Vec<Value> = text
+        .lines()
+        .filter_map(|line| line.strip_prefix("data: "))
+        .map(|data| serde_json::from_str(data).unwrap())
+        .collect();
+    assert!(
+        !events
+            .iter()
+            .any(|event| event["type"] == "response.failed")
+    );
+    for event in &events {
+        if let Some(item) = event
+            .get("item")
+            .filter(|item| item["type"] == "function_call")
+        {
+            assert_eq!(item["namespace"], "collaboration");
+            assert_eq!(item["encrypted_function_args"], json!([]));
+        }
+    }
+    let response = &events.last().unwrap()["response"];
+    assert_eq!(response["model"], "gpt-6-astra-devin");
+    let call = &response["output"][0];
+    assert_eq!(call["encrypted_function_args"], json!([]));
+    body["stream"] = json!(false);
+    body["input"] = json!([
+        call,
+        {"type":"function_call_output","call_id":"call-child","output":"spawned"},
+        {"type":"agent_message","author":"/root/probe","recipient":"/root","content":[{"type":"input_text","text":"CHILD_OK"}]}
+    ]);
+    let response = app.clone().oneshot(request(body.clone())).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = to_bytes(response.into_body(), 65536).await.unwrap();
+    let response: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(response["status"], "completed");
+    assert_eq!(response["model"], "gpt-6-astra-devin");
+    let mut compact = body.clone();
+    compact["tools"] = json!([]);
+    compact["tool_choice"] = json!("none");
+    compact["input"].as_array_mut().unwrap().insert(
+        0,
+        json!({
+            "type":"reasoning","encrypted_content":"opaque-state","summary":[],"content":null
+        }),
+    );
+    let response = app.clone().oneshot(request(compact)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    body["input"][2]["content"] =
+        json!([{"type":"encrypted_content","encrypted_content":"opaque"}]);
+    assert_eq!(
+        app.oneshot(request(body)).await.unwrap().status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
     task.abort();
 }
 

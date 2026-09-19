@@ -3,12 +3,27 @@ use crate::request::Problem;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
+pub const MODEL: &str = "gpt-6-astra-devin";
+pub const EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
+
 type Identity = (Option<String>, String);
+
+fn plaintext_agent_tool(namespace: Option<&str>, name: &str) -> bool {
+    namespace == Some("collaboration")
+        && matches!(name, "spawn_agent" | "send_message" | "followup_task")
+}
+
+fn close_reasoning_turn(input: &mut Vec<Value>) {
+    if input.last().is_some_and(|item| item["type"] == "reasoning") {
+        input.push(json!({"type":"message","role":"assistant","content":""}));
+    }
+}
 
 #[derive(Default)]
 pub struct Compatibility {
     names: BTreeMap<String, Identity>,
     descriptions: BTreeMap<String, String>,
+    model_alias: bool,
 }
 
 fn problem(reason: &str) -> Vec<Problem> {
@@ -85,6 +100,16 @@ impl Compatibility {
             }
             self.names.insert(alias.clone(), identity);
             let mut tool = tool.clone();
+            if tool["type"] == "function" && plaintext_agent_tool(namespace, name) {
+                let message = tool
+                    .pointer_mut("/parameters/properties/message")
+                    .and_then(Value::as_object_mut)
+                    .ok_or_else(|| problem("Expected collaboration message schema."))?;
+                if message.get("type").and_then(Value::as_str) != Some("string") {
+                    return Err(problem("Expected a string collaboration message."));
+                }
+                message.remove("encrypted");
+            }
             tool["name"] = json!(alias);
             if let Some(existing) = out.iter_mut().find(|t| t["name"] == alias) {
                 *existing = tool;
@@ -117,7 +142,13 @@ impl Compatibility {
         }
         // Serial gateway tool calls; concurrency inside Codex exec remains available.
         obj.insert("parallel_tool_calls".into(), json!(false));
-        let mut this = Self::default();
+        let mut this = Self {
+            model_alias: obj.get("model").and_then(Value::as_str) == Some(MODEL),
+            ..Self::default()
+        };
+        if this.model_alias {
+            obj.insert("model".into(), json!("gpt-6-astra"));
+        }
         let mut definitions = Vec::new();
         if let Some(tools) = obj.get("tools") {
             this.tools(
@@ -157,6 +188,26 @@ impl Compatibility {
             let kind = item["type"].as_str().unwrap_or("message").to_owned();
             match kind.as_str() {
                 "additional_tools" => continue,
+                "agent_message" => {
+                    if item["content"]
+                        .as_array()
+                        .is_some_and(|parts| parts.iter().any(|p| p["type"] == "encrypted_content"))
+                    {
+                        return Err(problem(
+                            "Encrypted Codex agent messages are unsupported by the Devin gateway adapter.",
+                        ));
+                    }
+                    let content = text(&item["content"])?;
+                    let author = item["author"]
+                        .as_str()
+                        .ok_or_else(|| problem("Agent message author is missing."))?;
+                    let recipient = item["recipient"]
+                        .as_str()
+                        .ok_or_else(|| problem("Agent message recipient is missing."))?;
+                    item = json!({"type":"message","role":"user","content":format!(
+                        "Agent message from {author} to {recipient}:\n{content}"
+                    )});
+                }
                 "message" => {
                     let content = text(&item["content"])?;
                     if matches!(item["role"].as_str(), Some("developer" | "system")) {
@@ -177,10 +228,27 @@ impl Compatibility {
                         .ok_or_else(|| problem("History tool name is missing."))?;
                     let ns = item["namespace"].as_str();
                     let alias = ns.map_or_else(|| name.to_owned(), |ns| format!("{ns}__{name}"));
-                    if !this.names.contains_key(&alias) {
-                        return Err(problem(
-                            "Historical tool is absent from the supplied definitions.",
-                        ));
+                    let identity = (ns.map(str::to_owned), name.to_owned());
+                    if this
+                        .names
+                        .get(&alias)
+                        .is_some_and(|existing| existing != &identity)
+                    {
+                        return Err(problem("Flattened historical tool names collide."));
+                    }
+                    this.names.insert(alias.clone(), identity);
+                    if kind == "function_call"
+                        && plaintext_agent_tool(ns, name)
+                        && let Some(encrypted) = item.get("encrypted_function_args")
+                    {
+                        if encrypted != &json!([]) {
+                            return Err(problem(
+                                "Encrypted collaboration arguments cannot be replayed.",
+                            ));
+                        }
+                        item.as_object_mut()
+                            .unwrap()
+                            .remove("encrypted_function_args");
                     }
                     item["name"] = json!(alias);
                     item.as_object_mut().unwrap().remove("namespace");
@@ -190,8 +258,12 @@ impl Compatibility {
                 }
                 _ => {}
             }
+            if item["role"] == "user" {
+                close_reasoning_turn(&mut input);
+            }
             input.push(item);
         }
+        close_reasoning_turn(&mut input);
         for (namespace, description) in &this.descriptions {
             instructions.push_str(&format!("\n\nNamespace {namespace}:\n{description}"));
         }
@@ -210,6 +282,11 @@ impl Compatibility {
     }
 
     pub fn restore(&self, event: &mut Value) {
+        if self.model_alias
+            && let Some(response) = event.get_mut("response").and_then(Value::as_object_mut)
+        {
+            response.insert("model".into(), json!(MODEL));
+        }
         fn item(names: &BTreeMap<String, Identity>, item: &mut Value) {
             if !matches!(
                 item["type"].as_str(),
@@ -220,6 +297,11 @@ impl Compatibility {
             if let Some((namespace, name)) = item["name"].as_str().and_then(|name| names.get(name))
             {
                 item["name"] = json!(name);
+                if item["type"] == "function_call"
+                    && plaintext_agent_tool(namespace.as_deref(), name)
+                {
+                    item["encrypted_function_args"] = json!([]);
+                }
                 if let Some(namespace) = namespace {
                     item["namespace"] = json!(namespace);
                 }
@@ -304,6 +386,130 @@ mod tests {
         let mut final_event = json!({"type":"response.completed","response":{"output":[call]}});
         mapping.restore(&mut final_event);
         assert_eq!(final_event["response"]["output"][0], event["item"]);
+    }
+
+    #[test]
+    fn devin_model_alias_preserves_effort_and_response_identity() {
+        let credentials = Credentials {
+            api_key: "test".into(),
+            endpoint: "https://example.invalid".into(),
+            device_id: String::new(),
+            client_version: String::new(),
+        };
+        for effort in ["low", "medium", "high", "xhigh", "max"] {
+            let body = json!({"model":"gpt-6-astra-devin", "input":"hello", "reasoning":{"effort":effort}});
+            let (prepared, mapping) = Compatibility::prepare(&body).unwrap();
+            let translated = translate_request(&prepared, &credentials).unwrap();
+            assert_eq!(translated.request.model, format!("gpt-6-astra-{effort}"));
+            assert_eq!(translated.model, "gpt-6-astra");
+            for kind in ["response.created", "response.completed", "response.failed"] {
+                let mut event = json!({"type":kind,"response":{"model":"gpt-6-astra","output":[]}});
+                mapping.restore(&mut event);
+                assert_eq!(event["response"]["model"], "gpt-6-astra-devin");
+            }
+        }
+        for model in ["other", "gpt-6-astra-devin-other"] {
+            let (prepared, _) =
+                Compatibility::prepare(&json!({"model":model,"input":"hello"})).unwrap();
+            assert!(translate_request(&prepared, &credentials).is_err());
+        }
+    }
+
+    #[test]
+    fn collaboration_uses_codex_plaintext_dispatch_without_changing_other_tools() {
+        for name in ["spawn_agent", "send_message", "followup_task"] {
+            for namespace in ["collaboration", "other"] {
+                let parameters = json!({"type":"object","properties":{"message":{"type":"string","description":"Task text","encrypted":true}},"required":["message"]});
+                let body = json!({"model":MODEL,"input":"hello","tools":[{
+                    "type":"namespace","name":namespace,"tools":[{
+                        "type":"function","name":name,"parameters":parameters
+                    }]
+                }]});
+                let (prepared, mapping) = Compatibility::prepare(&body).unwrap();
+                let actual = &prepared["tools"][0]["parameters"];
+                if namespace == "collaboration" {
+                    assert!(actual["properties"]["message"].get("encrypted").is_none());
+                    assert_eq!(actual["properties"]["message"]["description"], "Task text");
+                } else {
+                    assert_eq!(actual, &parameters);
+                }
+                let call = json!({"type":"function_call","name":format!("{namespace}__{name}"),"call_id":"c1","arguments":"{\"message\":\"hello\"}"});
+                let mut event = json!({"type":"response.output_item.done","item":call,"response":{"output":[call]}});
+                mapping.restore(&mut event);
+                let item = &event["item"];
+                assert_eq!(item["namespace"], namespace);
+                assert_eq!(item["name"], name);
+                assert_eq!(item["arguments"], "{\"message\":\"hello\"}");
+                assert_eq!(event["response"]["output"][0], *item);
+                if namespace == "collaboration" {
+                    assert_eq!(item["encrypted_function_args"], json!([]));
+                    let mut followup = body.clone();
+                    followup["input"] =
+                        json!([item, {"type":"function_call_output","call_id":"c1","output":"ok"}]);
+                    let (followup, _) = Compatibility::prepare(&followup).unwrap();
+                    assert!(crate::request::audit_request(&followup).is_empty());
+                } else {
+                    assert!(item.get("encrypted_function_args").is_none());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn interrupted_reasoning_keeps_an_empty_assistant_boundary() {
+        let reasoning = json!({"type":"reasoning","encrypted_content":"opaque","summary":[]});
+        for tail in [
+            vec![],
+            vec![json!({"role":"user","content":"interrupt"})],
+            vec![
+                json!({"type":"agent_message","author":"/root/child","recipient":"/root","content":[{"type":"input_text","text":"done"}]}),
+            ],
+        ] {
+            let mut input = vec![reasoning.clone()];
+            input.extend(tail);
+            let (body, _) = Compatibility::prepare(&json!({"model":MODEL,"input":input})).unwrap();
+            assert_eq!(body["input"][0], reasoning);
+            assert_eq!(
+                body["input"][1],
+                json!({"type":"message","role":"assistant","content":""})
+            );
+            assert!(crate::request::audit_request(&body).is_empty());
+        }
+    }
+
+    #[test]
+    fn compaction_keeps_historical_calls_without_readvertising_tools() {
+        let body = json!({"model":MODEL,"tools":[],"tool_choice":"none","input":[
+            {"type":"custom_tool_call","namespace":"functions","name":"exec","call_id":"c1","input":"text(42)"},
+            {"type":"custom_tool_call_output","call_id":"c1","output":"42"},
+            {"type":"function_call","namespace":"collaboration","name":"wait_agent","call_id":"c2","arguments":"{}"},
+            {"type":"function_call_output","call_id":"c2","output":"done"}
+        ]});
+        let (prepared, _) = Compatibility::prepare(&body).unwrap();
+        assert_eq!(prepared["tools"], json!([]));
+        assert_eq!(prepared["input"][0]["name"], "functions__exec");
+        assert_eq!(prepared["input"][0]["input"], "text(42)");
+        assert!(crate::request::audit_request(&prepared).is_empty());
+        let mut collision = body.clone();
+        collision["tools"] = json!([{"type":"function","name":"functions__exec","parameters":{}}]);
+        assert!(Compatibility::prepare(&collision).is_err());
+    }
+
+    #[test]
+    fn plaintext_agent_messages_translate_but_encrypted_messages_fail() {
+        let mut body = json!({"model":"gpt-6-astra","input":[{
+            "type":"agent_message","author":"/root/probe","recipient":"/root",
+            "content":[{"type":"input_text","text":"Message Type: FINAL_ANSWER\nPayload:\nCHILD_OK"}]
+        }]});
+        let (prepared, _) = Compatibility::prepare(&body).unwrap();
+        assert_eq!(prepared["input"][0]["role"], "user");
+        let content = prepared["input"][0]["content"].as_str().unwrap();
+        assert!(content.contains("/root/probe"));
+        assert!(content.contains("CHILD_OK"));
+        assert!(crate::request::audit_request(&prepared).is_empty());
+        body["input"][0]["content"] =
+            json!([{"type":"encrypted_content","encrypted_content":"opaque"}]);
+        assert!(Compatibility::prepare(&body).is_err());
     }
 
     #[test]

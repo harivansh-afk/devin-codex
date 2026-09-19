@@ -31,6 +31,52 @@ impl Drop for ProcessGroup {
 struct Catalog(PathBuf);
 
 impl Catalog {
+    fn prepare(value: &mut serde_json::Value) -> Result<(), &'static str> {
+        use crate::compat::{EFFORTS, MODEL};
+        use serde_json::{Value, json};
+        let models = value
+            .get_mut("models")
+            .and_then(Value::as_array_mut)
+            .ok_or("Cannot read Codex model catalog.")?;
+        models.retain(|m| m["slug"] == "gpt-6-astra");
+        let model = models
+            .first_mut()
+            .ok_or("Installed Codex does not provide the gpt-6-astra model catalog.")?;
+        model["slug"] = json!(MODEL);
+        model["display_name"] = json!("GPT-6 Astra (Devin)");
+        model["description"] =
+            json!("GPT-6 Astra through Devin inference; translated Codex compatibility mode.");
+        model["supported_reasoning_levels"]
+            .as_array_mut()
+            .ok_or("Codex model catalog has no reasoning levels.")?
+            .retain(|level| {
+                level["effort"]
+                    .as_str()
+                    .is_some_and(|e| EFFORTS.contains(&e))
+            });
+        if model["supported_reasoning_levels"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+        {
+            return Err("Codex model catalog has no supported Devin reasoning levels.");
+        }
+        if !model["default_reasoning_level"]
+            .as_str()
+            .is_some_and(|e| EFFORTS.contains(&e))
+        {
+            model["default_reasoning_level"] =
+                model["supported_reasoning_levels"][0]["effort"].clone();
+        }
+        model["additional_speed_tiers"] = json!([]);
+        model["service_tiers"] = json!([]);
+        model["input_modalities"] = json!(["text"]);
+        model["supports_image_detail_original"] = json!(false);
+        model["supports_search_tool"] = json!(false);
+        model["upgrade"] = Value::Null;
+        Ok(())
+    }
+
     async fn load(binary: &Path) -> Result<Self, &'static str> {
         let output = tokio::time::timeout(
             std::time::Duration::from_secs(10),
@@ -45,17 +91,10 @@ impl Catalog {
         let mut value: serde_json::Value = serde_json::from_slice(&output.stdout).map_err(
             |_| "Cannot read Codex model catalog. Codex 0.155.1 or compatible is required.",
         )?;
-        if !output.status.success()
-            || !value["models"]
-                .as_array()
-                .is_some_and(|models| models.iter().any(|m| m["slug"] == "gpt-6-astra"))
-        {
-            return Err("Installed Codex does not provide the gpt-6-astra model catalog.");
+        if !output.status.success() {
+            return Err("Cannot read Codex model catalog.");
         }
-        value["models"]
-            .as_array_mut()
-            .unwrap()
-            .retain(|m| m["slug"] == "gpt-6-astra");
+        Self::prepare(&mut value)?;
         let bytes = serde_json::to_vec(&value).map_err(|_| "Cannot encode model catalog.")?;
         let path = std::env::temp_dir().join(format!("devin-codex-models-{}.json", random_token()));
         let mut options = std::fs::OpenOptions::new();
@@ -188,14 +227,16 @@ impl Session {
             }
         }
         let mut command = Command::new(binary);
+        command.args(["--profile", "devin-codex"]);
         for setting in [
             "model_provider=\"devin\"".to_owned(),
-            "model=\"gpt-6-astra\"".to_owned(),
+            format!("model=\"{}\"", crate::compat::MODEL),
             format!(
                 "model_providers.devin={{name=\"Devin\",base_url=\"{}\",wire_api=\"responses\",env_key=\"DEVIN_CODEX_SESSION_TOKEN\",requires_openai_auth=false,supports_websockets=false,request_max_retries=0,stream_max_retries=0}}",
                 self.url
             ),
             "web_search=\"disabled\"".to_owned(),
+            "service_tier=\"default\"".to_owned(),
         ] {
             command.arg("-c").arg(setting);
         }
@@ -242,6 +283,53 @@ mod tests {
             client_version: String::new(),
         }
     }
+    #[test]
+    fn catalog_preserves_harness_and_only_advertises_supported_options() {
+        use serde_json::json;
+        let original = json!({
+            "slug":"gpt-6-astra", "default_reasoning_level":"medium",
+            "supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"},{"effort":"max"},{"effort":"ultra"}],
+            "base_instructions":"unchanged", "model_messages":{"instructions_template":"unchanged"},
+            "tool_mode":"code_mode_only", "multi_agent_version":"v2", "use_responses_lite":true,
+            "context_window":272000, "multi_agent_reasoning_effort":"xhigh",
+            "service_tiers":[{"id":"priority"}], "additional_speed_tiers":["fast"], "input_modalities":["text","image"]
+        });
+        let mut value = json!({"models":[original,{"slug":"other"}]});
+        Catalog::prepare(&mut value).unwrap();
+        assert_eq!(value["models"].as_array().unwrap().len(), 1);
+        let model = &value["models"][0];
+        assert_eq!(model["slug"], crate::compat::MODEL);
+        let efforts: Vec<_> = model["supported_reasoning_levels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|level| level["effort"].as_str().unwrap())
+            .collect();
+        assert_eq!(efforts, crate::compat::EFFORTS);
+        for key in [
+            "base_instructions",
+            "model_messages",
+            "tool_mode",
+            "multi_agent_version",
+            "use_responses_lite",
+            "context_window",
+            "multi_agent_reasoning_effort",
+            "default_reasoning_level",
+        ] {
+            assert_eq!(model[key], original[key], "{key}");
+        }
+        assert_eq!(model["service_tiers"], json!([]));
+        assert_eq!(model["additional_speed_tiers"], json!([]));
+        assert_eq!(model["input_modalities"], json!(["text"]));
+        for mut invalid in [
+            json!({}),
+            json!({"models":[]}),
+            json!({"models":[{"slug":"gpt-6-astra","supported_reasoning_levels":[]}]}),
+        ] {
+            assert!(Catalog::prepare(&mut invalid).is_err());
+        }
+    }
+
     #[tokio::test]
     async fn private_listener_and_command_lifecycle() {
         let session = Session::start(credentials()).await.unwrap();
