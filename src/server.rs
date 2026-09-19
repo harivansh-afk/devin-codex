@@ -194,21 +194,29 @@ async fn respond(
     let events = async_stream::stream! {
         for event in translator.created_events() { yield event; }
         futures_util::pin_mut!(frames);
-        let mut failed = false;
+        let mut failure = None;
         while let Some(frame) = frames.next().await {
             match frame {
                 Ok(frame) => match translator.push(frame) {
                     Ok(()) => {},
-                    Err(_) => { failed = true; break; }
+                    Err(error) => {
+                        failure = Some(("response_translation_error".to_owned(), format!("Adapter rejected gateway frame: {error}")));
+                        break;
+                    }
                 },
-                Err(_) => { failed = true; break; }
+                Err(error) => {
+                    let status = error.status.map(|status| format!(" (HTTP {status})")).unwrap_or_default();
+                    let message = format!("Devin gateway failed: {}{status}", error.code);
+                    failure = Some((error.code, message));
+                    break;
+                }
             }
         }
-        if failed { yield translator.failed_event(); }
+        if let Some((code, message)) = failure { yield translator.failed_event(&code, &message); }
         else {
             match translator.finish() {
                 Ok(events) => for event in events { yield event; },
-                Err(_) => yield translator.failed_event(),
+                Err(error) => yield translator.failed_event("response_translation_error", &format!("Adapter rejected completed gateway response: {error}")),
             }
         }
     };
