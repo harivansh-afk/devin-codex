@@ -3,7 +3,6 @@
 use crate::proto::ChatResponse;
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAX_BYTES: usize = 16 * 1024 * 1024;
@@ -16,16 +15,9 @@ pub enum ToolKind {
     Custom,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
 pub struct Error(pub &'static str);
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.0)
-    }
-}
-
-impl std::error::Error for Error {}
 
 pub struct Translator {
     model: String,
@@ -37,7 +29,7 @@ pub struct Translator {
     output: Vec<Value>,
     message: Option<usize>,
     reasoning: Option<usize>,
-    call: Option<(String, usize, ToolKind)>,
+    call: Option<(usize, ToolKind)>,
     signature: String,
     signature_type: String,
     stop: Option<i32>,
@@ -114,7 +106,7 @@ impl Translator {
 
     /// Buffer model output until checked EOF reveals the response-scoped signature.
     /// This initial subset intentionally does not preserve token streaming latency.
-    pub fn push(&mut self, frame: ChatResponse) -> Result<Vec<Value>, Error> {
+    pub fn push(&mut self, frame: ChatResponse) -> Result<(), Error> {
         let result = self.push_inner(frame);
         if result.is_err() {
             self.terminal = true;
@@ -122,7 +114,7 @@ impl Translator {
         result
     }
 
-    fn push_inner(&mut self, frame: ChatResponse) -> Result<Vec<Value>, Error> {
+    fn push_inner(&mut self, frame: ChatResponse) -> Result<(), Error> {
         if self.terminal {
             return Err(Error("Response stream is already terminal"));
         }
@@ -222,13 +214,12 @@ impl Translator {
                 } else {
                     frame.output_id
                 };
-                let mut item = json!({"type":"message","id":id,"role":"assistant","status":"in_progress","content":[]});
+                let mut item = json!({"type":"message","id":id,"role":"assistant","status":"in_progress",
+                    "content":[{"type":"output_text","text":"","annotations":[]}]});
                 if !frame.phase.is_empty() {
                     item["phase"] = json!(frame.phase);
                 }
                 self.message = Some(self.append(item)?);
-                let part = json!({"type":"output_text","text":"","annotations":[]});
-                self.output[index]["content"] = json!([part]);
             }
             let index = self.message.expect("message allocated above");
             let Value::String(text) = &mut self.output[index]["content"][0]["text"] else {
@@ -271,11 +262,10 @@ impl Translator {
                 item[if custom { "input" } else { "arguments" }] = json!("");
                 self.append(item)?;
                 self.message = None;
-                self.call = Some((delta.id.clone(), index, kind));
+                self.call = Some((index, kind));
             }
-            let (call_id, index, kind) = self.call.as_ref().expect("call allocated above");
-            let (index, kind) = (*index, *kind);
-            if !delta.id.is_empty() && delta.id != *call_id {
+            let (index, kind) = self.call.expect("call allocated above");
+            if !delta.id.is_empty() && self.output[index]["call_id"] != delta.id {
                 return Err(Error(
                     "Multiple tool calls are unsupported while parallel calls are disabled",
                 ));
@@ -296,7 +286,7 @@ impl Translator {
             };
             input.push_str(&delta.arguments_json);
         }
-        Ok(Vec::new())
+        Ok(())
     }
 
     /// Call ONLY after Gateway has validated its terminal envelope and EOF.
@@ -349,6 +339,11 @@ impl Translator {
             return Err(Error("Gateway reused an output item ID"));
         }
         let incomplete = matches!(self.stop, Some(3 | 11));
+        let status = if incomplete {
+            "incomplete"
+        } else {
+            "completed"
+        };
         if !incomplete {
             for item in &self.output {
                 if item["type"] == "function_call" {
@@ -362,20 +357,14 @@ impl Translator {
             }
         }
         let mut events = Vec::new();
-        for index in 0..self.output.len() {
-            let kind = self.output[index]["type"]
-                .as_str()
-                .unwrap_or_default()
-                .to_owned();
-            if kind != "reasoning" {
-                self.output[index]["status"] = json!(if incomplete {
-                    "incomplete"
-                } else {
-                    "completed"
-                });
+        let mut output = std::mem::take(&mut self.output);
+        for (index, item) in output.iter_mut().enumerate() {
+            let is_reasoning = item["type"] == "reasoning";
+            let is_message = item["type"] == "message";
+            if !is_reasoning {
+                item["status"] = json!(status);
             }
-            let item = self.output[index].clone();
-            if kind == "reasoning" {
+            if is_reasoning {
                 events.push(self.event(
                     "response.output_item.added",
                     json!({"output_index":index,"item":item}),
@@ -389,11 +378,9 @@ impl Translator {
                     events.push(self.event("response.reasoning_summary_part.added", json!({"output_index":index,"item_id":item["id"],"summary_index":summary_index,"part":part})));
                     events.push(self.event("response.reasoning_summary_text.done", json!({"output_index":index,"item_id":item["id"],"summary_index":summary_index,"text":part["text"]})));
                 }
-            } else if kind == "message" {
+            } else if is_message {
                 let part = &item["content"][0];
-                let mut initial = item.clone();
-                initial["status"] = json!("in_progress");
-                initial["content"] = json!([]);
+                let initial = initial_item(item, "content", json!([]));
                 events.push(self.event(
                     "response.output_item.added",
                     json!({"output_index":index,"item":initial}),
@@ -403,11 +390,9 @@ impl Translator {
                 events.push(self.event("response.output_text.done", json!({"output_index":index,"item_id":item["id"],"content_index":0,"text":part["text"]})));
                 events.push(self.event("response.content_part.done", json!({"output_index":index,"item_id":item["id"],"content_index":0,"part":part})));
             } else if !incomplete {
-                let custom = kind == "custom_tool_call";
+                let custom = item["type"] == "custom_tool_call";
                 let key = if custom { "input" } else { "arguments" };
-                let mut initial = item.clone();
-                initial["status"] = json!("in_progress");
-                initial[key] = json!("");
+                let initial = initial_item(item, key, json!(""));
                 events.push(self.event(
                     "response.output_item.added",
                     json!({"output_index":index,"item":initial}),
@@ -425,18 +410,15 @@ impl Translator {
                 ));
             }
             // Codex executes tool output_item.done even without response.completed.
-            if !incomplete || kind == "reasoning" || kind == "message" {
+            if !incomplete || is_reasoning || is_message {
                 events.push(self.event(
                     "response.output_item.done",
                     json!({"output_index":index,"item":item}),
                 ));
             }
         }
-        let mut response = self.response(if incomplete {
-            "incomplete"
-        } else {
-            "completed"
-        });
+        self.output = output;
+        let mut response = self.response(status);
         if incomplete {
             response["incomplete_details"] = json!({"reason":if self.stop == Some(3) {"max_output_tokens"} else {"content_filter"}});
         }
@@ -448,7 +430,6 @@ impl Translator {
             },
             json!({"response":response}),
         ));
-        self.terminal = true;
         Ok(events)
     }
 
@@ -458,6 +439,19 @@ impl Translator {
         response["error"] = json!({"type":"server_error","code":"upstream_protocol_error","message":"Upstream inference stream failed"});
         self.event("response.failed", json!({"response":response}))
     }
+}
+
+fn initial_item(item: &Value, payload_key: &str, empty: Value) -> Value {
+    let mut initial: Value = item
+        .as_object()
+        .expect("output item is an object")
+        .iter()
+        .filter(|(key, _)| key.as_str() != payload_key)
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    initial["status"] = json!("in_progress");
+    initial[payload_key] = empty;
+    initial
 }
 
 fn validate_reasoning(item: &Value) -> Result<(), Error> {
@@ -502,14 +496,6 @@ fn validate_reasoning(item: &Value) -> Result<(), Error> {
     Ok(())
 }
 
-pub fn encode_sse(event: &Value) -> String {
-    format!(
-        "event: {}\ndata: {}\n\n",
-        event["type"].as_str().unwrap_or("error"),
-        event
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -547,14 +533,12 @@ mod tests {
     fn text_phase_sequences_and_success_without_stop_enum() {
         let mut t = translator();
         let mut events = t.created_events();
-        events.extend(
-            t.push(ChatResponse {
-                delta_text: "hello".into(),
-                phase: "final_answer".into(),
-                ..Default::default()
-            })
-            .unwrap(),
-        );
+        t.push(ChatResponse {
+            delta_text: "hello".into(),
+            phase: "final_answer".into(),
+            ..Default::default()
+        })
+        .unwrap();
         events.extend(t.finish().unwrap());
         for (index, event) in events.iter().enumerate() {
             assert_eq!(event["sequence_number"], index);
@@ -563,18 +547,12 @@ mod tests {
             events.last().unwrap()["response"]["output"][0]["phase"],
             "final_answer"
         );
-        assert!(encode_sse(&events[0]).ends_with("\n\n"));
     }
 
     #[test]
-    fn custom_identity_only_on_first_delta_and_no_early_execution() {
+    fn custom_identity_only_on_first_delta() {
         let mut t = translator();
-        let events = t.push(call(true)).unwrap();
-        assert!(
-            !events
-                .iter()
-                .any(|e| e["type"] == "response.output_item.done")
-        );
+        t.push(call(true)).unwrap();
         t.push(ChatResponse {
             delta_tool_calls: vec![ToolCall {
                 arguments_json: "42)".into(),

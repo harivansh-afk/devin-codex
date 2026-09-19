@@ -47,6 +47,10 @@ fn name_valid(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
 }
 
+fn field_str<'a>(obj: &'a Map<String, Value>, key: &str) -> Option<&'a str> {
+    obj.get(key).and_then(Value::as_str)
+}
+
 fn str_is(value: Option<&Value>, choices: &[&str]) -> bool {
     value
         .and_then(Value::as_str)
@@ -55,6 +59,147 @@ fn str_is(value: Option<&Value>, choices: &[&str]) -> bool {
 
 fn nonempty(value: Option<&Value>) -> bool {
     value.and_then(Value::as_str).is_some_and(|v| !v.is_empty())
+}
+
+fn audit_tools<'a>(value: Option<&'a Value>, out: &mut Vec<Problem>) -> HashMap<&'a str, &'a str> {
+    let mut tool_types = HashMap::new();
+    let Some(value) = value else {
+        return tool_types;
+    };
+    let Some(tools) = value.as_array() else {
+        bad(out, "tools", "Expected array.");
+        return tool_types;
+    };
+    for (i, tool) in tools.iter().enumerate() {
+        let path = format!("tools[{i}]");
+        let Some(tool) = tool.as_object() else {
+            bad(out, path, "Expected an object.");
+            continue;
+        };
+        let kind = field_str(tool, "type");
+        if kind == Some("namespace") {
+            bad(
+                out,
+                path,
+                "Gateway namespace identity is not established; flattening is disabled.",
+            );
+            continue;
+        }
+        if !matches!(kind, Some("function" | "custom")) {
+            bad(
+                out,
+                path,
+                "Only flat function/custom definitions have a verified wire representation.",
+            );
+            continue;
+        }
+        let function = kind == Some("function");
+        unknown(
+            out,
+            tool,
+            if function {
+                &["type", "name", "description", "parameters", "strict"]
+            } else {
+                &["type", "name", "description", "format"]
+            },
+            &path,
+        );
+        if let Some(name) = field_str(tool, "name").filter(|s| name_valid(s)) {
+            if tool_types.insert(name, kind.unwrap()).is_some() {
+                bad(out, format!("{path}.name"), "Duplicate name.");
+            }
+        } else {
+            bad(
+                out,
+                format!("{path}.name"),
+                "Expected an unqualified tool name.",
+            );
+        }
+        if tool.get("description").is_some_and(|v| !v.is_string()) {
+            bad(out, format!("{path}.description"), "Expected string.");
+        }
+        if function {
+            if !tool.get("parameters").is_some_and(Value::is_object) {
+                bad(
+                    out,
+                    format!("{path}.parameters"),
+                    "Expected JSON Schema object.",
+                );
+            }
+            if tool.get("strict").is_some_and(|v| !v.is_boolean()) {
+                bad(out, format!("{path}.strict"), "Expected boolean.");
+            }
+        } else if let Some(fmt) = tool.get("format") {
+            match fmt.as_object() {
+                Some(fmt) if field_str(fmt, "type") == Some("grammar") => {
+                    if fmt.len() != 3
+                        || field_str(fmt, "syntax") != Some("lark")
+                        || !fmt.get("definition").is_some_and(Value::is_string)
+                    {
+                        bad(
+                            out,
+                            format!("{path}.format"),
+                            "Only an unchanged Lark grammar is verified.",
+                        );
+                    }
+                }
+                Some(_) if fmt == &json!({"type":"text"}) => {}
+                Some(_) => bad(
+                    out,
+                    format!("{path}.format"),
+                    "Unsupported custom-tool format.",
+                ),
+                None => bad(out, format!("{path}.format"), "Expected object."),
+            }
+        }
+    }
+    tool_types
+}
+
+fn text_part(value: &Value, kind: &str) -> bool {
+    value["type"].as_str() == Some(kind) && value["text"].is_string()
+}
+
+fn audit_content(content: Option<&Value>, role: Option<&str>, path: &str, out: &mut Vec<Problem>) {
+    match content {
+        Some(Value::String(_)) => {}
+        Some(Value::Array(parts)) => {
+            let expected = if role == Some("assistant") {
+                "output_text"
+            } else {
+                "input_text"
+            };
+            if parts.len() != 1 || !text_part(&parts[0], expected) {
+                bad(
+                    out,
+                    format!("{path}.content"),
+                    "Only one text part is supported; no flattening or image substitution.",
+                );
+            } else {
+                let part = parts[0].as_object().unwrap();
+                unknown(
+                    out,
+                    part,
+                    if expected == "output_text" {
+                        &["type", "text", "annotations", "logprobs"]
+                    } else {
+                        &["type", "text"]
+                    },
+                    &format!("{path}.content[0]"),
+                );
+                for key in ["annotations", "logprobs"] {
+                    if part.get(key).is_some_and(|v| v != &json!([])) {
+                        bad(
+                            out,
+                            format!("{path}.content[0].{key}"),
+                            "Only empty annotation/logprob arrays are supported.",
+                        );
+                    }
+                }
+            }
+        }
+        _ => bad(out, format!("{path}.content"), "Expected text."),
+    }
 }
 
 pub fn audit_request(body: &Value) -> Vec<Problem> {
@@ -83,7 +228,7 @@ pub fn audit_request(body: &Value) -> Vec<Problem> {
         ],
         "",
     );
-    if body.get("model").and_then(Value::as_str) != Some("gpt-6-astra") {
+    if body["model"].as_str() != Some("gpt-6-astra") {
         bad(
             &mut out,
             "model",
@@ -171,100 +316,7 @@ pub fn audit_request(body: &Value) -> Vec<Problem> {
             "Expected integer in 1..128000.",
         );
     }
-    let mut tool_types: HashMap<&str, &str> = HashMap::new();
-    if let Some(tools) = obj.get("tools") {
-        if let Some(tools) = tools.as_array() {
-            for (i, tool) in tools.iter().enumerate() {
-                let path = format!("tools[{i}]");
-                let Some(tool) = tool.as_object() else {
-                    bad(&mut out, path, "Expected an object.");
-                    continue;
-                };
-                let kind = tool.get("type").and_then(Value::as_str);
-                if kind == Some("namespace") {
-                    bad(
-                        &mut out,
-                        path,
-                        "Gateway namespace identity is not established; flattening is disabled.",
-                    );
-                    continue;
-                }
-                if !matches!(kind, Some("function" | "custom")) {
-                    bad(
-                        &mut out,
-                        path,
-                        "Only flat function/custom definitions have a verified wire representation.",
-                    );
-                    continue;
-                }
-                let function = kind == Some("function");
-                unknown(
-                    &mut out,
-                    tool,
-                    if function {
-                        &["type", "name", "description", "parameters", "strict"]
-                    } else {
-                        &["type", "name", "description", "format"]
-                    },
-                    &path,
-                );
-                if let Some(name) = tool
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .filter(|s| name_valid(s))
-                {
-                    if tool_types.insert(name, kind.unwrap()).is_some() {
-                        bad(&mut out, format!("{path}.name"), "Duplicate name.");
-                    }
-                } else {
-                    bad(
-                        &mut out,
-                        format!("{path}.name"),
-                        "Expected an unqualified tool name.",
-                    );
-                }
-                if tool.get("description").is_some_and(|v| !v.is_string()) {
-                    bad(&mut out, format!("{path}.description"), "Expected string.");
-                }
-                if function {
-                    if !tool.get("parameters").is_some_and(Value::is_object) {
-                        bad(
-                            &mut out,
-                            format!("{path}.parameters"),
-                            "Expected JSON Schema object.",
-                        );
-                    }
-                    if tool.get("strict").is_some_and(|v| !v.is_boolean()) {
-                        bad(&mut out, format!("{path}.strict"), "Expected boolean.");
-                    }
-                } else if let Some(fmt) = tool.get("format") {
-                    match fmt.as_object() {
-                        Some(fmt) if fmt.get("type").and_then(Value::as_str) == Some("grammar") => {
-                            if fmt.len() != 3
-                                || fmt.get("syntax").and_then(Value::as_str) != Some("lark")
-                                || !fmt.get("definition").is_some_and(Value::is_string)
-                            {
-                                bad(
-                                    &mut out,
-                                    format!("{path}.format"),
-                                    "Only an unchanged Lark grammar is verified.",
-                                );
-                            }
-                        }
-                        Some(_) if fmt == &json!({"type":"text"}) => {}
-                        Some(_) => bad(
-                            &mut out,
-                            format!("{path}.format"),
-                            "Unsupported custom-tool format.",
-                        ),
-                        None => bad(&mut out, format!("{path}.format"), "Expected object."),
-                    }
-                }
-            }
-        } else {
-            bad(&mut out, "tools", "Expected array.");
-        }
-    }
+    let tool_types = audit_tools(obj.get("tools"), &mut out);
     let items = match obj.get("input") {
         Some(Value::String(_)) => return out,
         Some(Value::Array(items)) => items,
@@ -317,7 +369,7 @@ pub fn audit_request(body: &Value) -> Vec<Problem> {
                 continue;
             }
             Some("message") => {
-                let role = item.get("role").and_then(Value::as_str);
+                let role = field_str(item, "role");
                 if !matches!(role, Some("user" | "assistant")) {
                     bad(
                         &mut out,
@@ -325,49 +377,7 @@ pub fn audit_request(body: &Value) -> Vec<Problem> {
                         "Developer/system message boundaries cannot be preserved by concatenation.",
                     );
                 }
-                match item.get("content") {
-                    Some(Value::String(_)) => {}
-                    Some(Value::Array(parts)) => {
-                        let expected = if role == Some("assistant") {
-                            "output_text"
-                        } else {
-                            "input_text"
-                        };
-                        if parts.len() != 1
-                            || !parts[0].is_object()
-                            || parts[0].get("type").and_then(Value::as_str) != Some(expected)
-                            || !parts[0].get("text").is_some_and(Value::is_string)
-                        {
-                            bad(
-                                &mut out,
-                                format!("{path}.content"),
-                                "Only one text part is supported; no flattening or image substitution.",
-                            );
-                        } else {
-                            let part = parts[0].as_object().unwrap();
-                            unknown(
-                                &mut out,
-                                part,
-                                if expected == "output_text" {
-                                    &["type", "text", "annotations", "logprobs"]
-                                } else {
-                                    &["type", "text"]
-                                },
-                                &format!("{path}.content[0]"),
-                            );
-                            for key in ["annotations", "logprobs"] {
-                                if part.get(key).is_some_and(|v| v != &json!([])) {
-                                    bad(
-                                        &mut out,
-                                        format!("{path}.content[0].{key}"),
-                                        "Only empty annotation/logprob arrays are supported.",
-                                    );
-                                }
-                            }
-                        }
-                    }
-                    _ => bad(&mut out, format!("{path}.content"), "Expected text."),
-                }
+                audit_content(item.get("content"), role, &path, &mut out);
                 if item.contains_key("phase")
                     && (role != Some("assistant")
                         || !str_is(item.get("phase"), &["commentary", "final_answer"]))
@@ -387,11 +397,7 @@ pub fn audit_request(body: &Value) -> Vec<Problem> {
             }
             Some("function_call" | "custom_tool_call") => {
                 let kind = kind.unwrap();
-                if let Some(id) = item
-                    .get("call_id")
-                    .and_then(Value::as_str)
-                    .filter(|s| !s.is_empty())
-                {
+                if let Some(id) = field_str(item, "call_id").filter(|s| !s.is_empty()) {
                     if !all_call_ids.insert(id) {
                         bad(&mut out, format!("{path}.call_id"), "Duplicate call ID.");
                     }
@@ -404,11 +410,7 @@ pub fn audit_request(body: &Value) -> Vec<Problem> {
                 } else {
                     "custom"
                 };
-                match item
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .and_then(|name| tool_types.get(name))
-                {
+                match field_str(item, "name").and_then(|name| tool_types.get(name)) {
                     Some(found) if *found != expected => bad(
                         &mut out,
                         format!("{path}.type"),
@@ -442,11 +444,7 @@ pub fn audit_request(body: &Value) -> Vec<Problem> {
                 } else {
                     "custom_tool_call"
                 };
-                match item
-                    .get("call_id")
-                    .and_then(Value::as_str)
-                    .and_then(|id| calls.remove(id))
-                {
+                match field_str(item, "call_id").and_then(|id| calls.remove(id)) {
                     Some(found) if found != expected => bad(
                         &mut out,
                         format!("{path}.type"),
@@ -484,12 +482,8 @@ pub fn audit_request(body: &Value) -> Vec<Problem> {
                     if let Some(parts) = item.get(key) {
                         let valid = parts.as_array().is_some_and(|parts| {
                             parts.iter().all(|part| {
-                                part.as_object().is_some_and(|part| {
-                                    part.len() == 2
-                                        && part.get("type").and_then(Value::as_str)
-                                            == Some(part_type)
-                                        && part.get("text").is_some_and(Value::is_string)
-                                })
+                                part.as_object().is_some_and(|p| p.len() == 2)
+                                    && text_part(part, part_type)
                             })
                         });
                         if !valid {
@@ -539,6 +533,14 @@ pub fn audit_request(body: &Value) -> Vec<Problem> {
     out
 }
 
+fn text(value: &Value) -> &str {
+    value.as_str().expect("validated string")
+}
+
+fn optional_text(value: &Value) -> &str {
+    value.as_str().unwrap_or_default()
+}
+
 pub fn translate_request(
     body: &Value,
     credentials: &Credentials,
@@ -574,18 +576,14 @@ pub fn translate_request(
     let mut messages = Vec::new();
     let mut reasoning = Vec::new();
     for item in items {
-        let kind = item
-            .get("type")
-            .and_then(Value::as_str)
-            .unwrap_or("message");
+        let kind = item["type"].as_str().unwrap_or("message");
         if kind == "reasoning" {
             reasoning.push(item.clone());
             continue;
         }
         let mut message = proto::ChatMessage {
-            id: item
-                .get("id")
-                .and_then(Value::as_str)
+            id: item["id"]
+                .as_str()
                 .map(str::to_owned)
                 .unwrap_or_else(|| Uuid::new_v4().to_string()),
             ..Default::default()
@@ -597,30 +595,23 @@ pub fn translate_request(
                     .as_str()
                     .unwrap_or_else(|| item["content"][0]["text"].as_str().expect("validated text"))
                     .into();
-                message.phase = item
-                    .get("phase")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .into();
+                message.phase = optional_text(&item["phase"]).into();
             }
             "function_call" | "custom_tool_call" => {
                 let custom = kind == "custom_tool_call";
                 message.role = 2;
                 message.tool_calls.push(proto::ToolCall {
-                    id: item["call_id"].as_str().unwrap().into(),
-                    name: item["name"].as_str().unwrap().into(),
-                    arguments_json: item[if custom { "input" } else { "arguments" }]
-                        .as_str()
-                        .unwrap()
-                        .into(),
+                    id: text(&item["call_id"]).into(),
+                    name: text(&item["name"]).into(),
+                    arguments_json: text(&item[if custom { "input" } else { "arguments" }]).into(),
                     is_custom_tool_call: custom.then_some(true),
                     ..Default::default()
                 });
             }
             "function_call_output" | "custom_tool_call_output" => {
                 message.role = 4;
-                message.content = item["output"].as_str().unwrap().into();
-                message.tool_call_id = item["call_id"].as_str().unwrap().into();
+                message.content = text(&item["output"]).into();
+                message.tool_call_id = text(&item["call_id"]).into();
             }
             _ => unreachable!("audit rejected unknown input kind"),
         }
@@ -636,26 +627,17 @@ pub fn translate_request(
     if let Some(definitions) = body.get("tools").and_then(Value::as_array) {
         for tool in definitions {
             let custom = tool["type"] == "custom";
-            let name = tool["name"].as_str().unwrap().to_owned();
+            let name = text(&tool["name"]).to_owned();
             let mut definition = proto::ToolDefinition {
                 name: name.clone(),
-                description: tool
-                    .get("description")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .into(),
+                description: optional_text(&tool["description"]).into(),
                 is_custom: custom,
                 ..Default::default()
             };
             if custom {
-                if tool
-                    .get("format")
-                    .and_then(|f| f.get("type"))
-                    .and_then(Value::as_str)
-                    == Some("grammar")
-                {
-                    definition.grammar = tool["format"]["definition"].as_str().unwrap().into();
-                    definition.grammar_syntax = tool["format"]["syntax"].as_str().unwrap().into();
+                if tool["format"]["type"].as_str() == Some("grammar") {
+                    definition.grammar = text(&tool["format"]["definition"]).into();
+                    definition.grammar_syntax = text(&tool["format"]["syntax"]).into();
                 }
                 tool_map.insert(name, ToolKind::Custom);
             } else {
@@ -672,17 +654,10 @@ pub fn translate_request(
         .and_then(|r| r.get("effort"))
         .and_then(Value::as_str)
         .unwrap_or("medium");
-    let mode = body
-        .get("tool_choice")
-        .and_then(Value::as_str)
-        .unwrap_or("auto");
+    let mode = body["tool_choice"].as_str().unwrap_or("auto");
     let request = proto::ChatRequest {
         metadata: Some(metadata),
-        system_prompt: body
-            .get("instructions")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .into(),
+        system_prompt: optional_text(&body["instructions"]).into(),
         messages,
         request_type: 5,
         completion_config: Some(proto::CompletionConfig {
