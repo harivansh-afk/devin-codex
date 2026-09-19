@@ -1,0 +1,226 @@
+use axum::{
+    Router,
+    body::{Body, to_bytes},
+    http::{Request, StatusCode},
+    routing::post,
+};
+use devin_codex::{config::Credentials, gateway::GatewayClient, proto::ChatResponse, server};
+use prost::Message;
+use serde_json::{Value, json};
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
+use tower::ServiceExt;
+
+const TOKEN: &str = "synthetic-private-test-token";
+
+async fn app() -> (Router, Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counter = calls.clone();
+    let upstream = Router::new().route(
+        "/rpc",
+        post(
+            move |headers: axum::http::HeaderMap, body: axum::body::Bytes| {
+                let calls = counter.clone();
+                async move {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    assert_eq!(
+                        headers["authorization"],
+                        "Basic gateway-test-key-gateway-test-key"
+                    );
+                    assert!(headers.get("chatgpt-account-id").is_none());
+                    assert_eq!(body[0], 0);
+                    let response = ChatResponse {
+                        delta_text: "hello".into(),
+                        phase: "final_answer".into(),
+                        ..Default::default()
+                    }
+                    .encode_to_vec();
+                    let mut framed = vec![0];
+                    framed.extend_from_slice(&(response.len() as u32).to_be_bytes());
+                    framed.extend(response);
+                    framed.extend_from_slice(&[2, 0, 0, 0, 2, b'{', b'}']);
+                    ([("content-type", "application/connect+proto")], framed)
+                }
+            },
+        ),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}/rpc", listener.local_addr().unwrap());
+    let task = tokio::spawn(async move {
+        axum::serve(listener, upstream).await.unwrap();
+    });
+    let credentials = Credentials {
+        endpoint: endpoint.clone(),
+        api_key: "gateway-test-key".into(),
+        device_id: "synthetic-device".into(),
+        client_version: "test".into(),
+    };
+    let gateway = GatewayClient::new(&endpoint, &credentials.api_key).unwrap();
+    (
+        server::router(credentials, TOKEN.into(), gateway),
+        calls,
+        task,
+    )
+}
+
+fn request(body: Value) -> Request<Body> {
+    Request::post("/v1/responses")
+        .header("authorization", format!("Bearer {TOKEN}"))
+        .header("chatgpt-account-id", "must-not-forward")
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
+#[tokio::test]
+async fn authentication_and_semantic_rejection_precede_inference() {
+    let (app, calls, task) = app().await;
+    let mut unauthorized = request(json!({"model":"gpt-6-astra","input":"hello"}));
+    unauthorized.headers_mut().remove("authorization");
+    assert_eq!(
+        app.clone().oneshot(unauthorized).await.unwrap().status(),
+        StatusCode::UNAUTHORIZED
+    );
+    let response=app.oneshot(request(json!({"model":"gpt-6-astra","input":[{"role":"developer","content":"private nonce"}],"tools":[{"type":"namespace","name":"functions"}]}))).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let bytes = to_bytes(response.into_body(), 4096).await.unwrap();
+    assert!(!String::from_utf8_lossy(&bytes).contains("private nonce"));
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    task.abort();
+}
+
+#[tokio::test]
+async fn authenticated_json_and_compressed_sse_roundtrip() {
+    let (app, calls, task) = app().await;
+    let response = app
+        .clone()
+        .oneshot(request(json!({"model":"gpt-6-astra","input":"hello"})))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), 65536).await.unwrap()).unwrap();
+    assert_eq!(body["status"], "completed");
+    assert_eq!(body["output"][0]["content"][0]["text"], "hello");
+    let compressed = zstd::encode_all(
+        json!({"model":"gpt-6-astra","input":"hello","stream":true})
+            .to_string()
+            .as_bytes(),
+        1,
+    )
+    .unwrap();
+    let request = Request::post("/v1/responses")
+        .header("authorization", format!("Bearer {TOKEN}"))
+        .header("content-encoding", "zstd")
+        .body(Body::from(compressed))
+        .unwrap();
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = to_bytes(response.into_body(), 65536).await.unwrap();
+    let text = String::from_utf8(bytes.to_vec()).unwrap();
+    assert!(text.contains("response.completed"));
+    assert!(!text.contains("response.failed"));
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    task.abort();
+}
+
+#[tokio::test]
+async fn explicit_unsupported_routes_and_websocket_fallback() {
+    let (app, _, task) = app().await;
+    let req = Request::get("/v1/responses")
+        .header("authorization", format!("Bearer {TOKEN}"))
+        .header("upgrade", "websocket")
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        app.clone().oneshot(req).await.unwrap().status(),
+        StatusCode::UPGRADE_REQUIRED
+    );
+    let req = Request::post("/v1/responses/compact")
+        .header("authorization", format!("Bearer {TOKEN}"))
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        app.oneshot(req).await.unwrap().status(),
+        StatusCode::NOT_IMPLEMENTED
+    );
+    task.abort();
+}
+
+#[tokio::test]
+async fn dropping_downstream_sse_cancels_gateway_response() {
+    use futures_util::StreamExt;
+    use std::{convert::Infallible, time::Duration};
+    use tokio::sync::Notify;
+    struct OnDrop(Arc<Notify>);
+    impl Drop for OnDrop {
+        fn drop(&mut self) {
+            self.0.notify_one();
+        }
+    }
+    let disconnected = Arc::new(Notify::new());
+    let connected = Arc::new(Notify::new());
+    let closed = disconnected.clone();
+    let started = connected.clone();
+    let upstream = Router::new().route(
+        "/rpc",
+        post(move || {
+            let guard = OnDrop(closed.clone());
+            let started = started.clone();
+            async move {
+                let output = async_stream::stream! {
+                    let _guard=guard;
+                    started.notify_one();
+                    // Keep emitting small valid frames until the adapter drops us.
+                    loop {
+                        yield Ok::<_,Infallible>(axum::body::Bytes::from_static(&[0,0,0,0,0]));
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                };
+                (
+                    [("content-type", "application/connect+proto")],
+                    Body::from_stream(output),
+                )
+            }
+        }),
+    );
+    let upstream_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}/rpc", upstream_listener.local_addr().unwrap());
+    let upstream_task =
+        tokio::spawn(async move { axum::serve(upstream_listener, upstream).await.unwrap() });
+    let credentials = Credentials {
+        endpoint: endpoint.clone(),
+        api_key: "test-key".into(),
+        device_id: "test".into(),
+        client_version: "test".into(),
+    };
+    let router = server::router(
+        credentials,
+        TOKEN.into(),
+        GatewayClient::new(&endpoint, "test-key").unwrap(),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/v1/responses", listener.local_addr().unwrap());
+    let adapter_task = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+    let response = client
+        .post(url)
+        .bearer_auth(TOKEN)
+        .json(&json!({"model":"gpt-6-astra","input":"hello","stream":true}))
+        .send()
+        .await
+        .unwrap();
+    let mut stream = response.bytes_stream();
+    assert!(stream.next().await.unwrap().is_ok());
+    tokio::time::timeout(Duration::from_secs(2), connected.notified())
+        .await
+        .unwrap();
+    drop(stream);
+    tokio::time::timeout(Duration::from_secs(2), disconnected.notified())
+        .await
+        .unwrap();
+    adapter_task.abort();
+    upstream_task.abort();
+}
