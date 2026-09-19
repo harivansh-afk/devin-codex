@@ -2,7 +2,11 @@
 
 Research snapshot: September 19, 2026. Tested Codex 0.155.1, Devin 3000.10.31, and the authenticated enterprise gateway with `gpt-6-astra-medium`.
 
-**This adapter does not run the full Codex harness.** Flat tools and text work in the tested subset. Developer messages, namespaces and Responses Lite tool placement have no demonstrated lossless gateway mapping. Requests needing them are rejected before inference.
+**Compatibility mode runs the Codex TUI with deliberate translation losses.** The launcher enables it; standalone `serve` and `audit` retain the strict subset described below. Developer messages, namespaces and Responses Lite tool placement still have no lossless gateway mapping.
+
+The launcher uses a custom Responses provider and the installed binary's bundled Astra catalog. This avoids modifying saved auth and disables unsupported native web tools. It merges developer/system messages into the top-level prompt, joins text parts and hoists tools from `additional_tools`. Namespaced tools receive flat aliases, restored to their original namespace/name on output and translated again in history. Colliding aliases fail before inference. Multiple assistant items may share response-scoped reasoning in compatibility mode; consumption by the backend remains unverified.
+
+Live acceptance: stock Codex 0.155.1 created a Rust file, patched it, ran tests, and completed two interactive turns with three passing tests, then resumed the session and recalled its test cases. No Codex patch was needed. Historical strict-mode failures and provider differences below remain useful evidence, not a statement that the compatibility launcher rejects all Codex sessions.
 
 Live prompts were synthetic. Private captures and credentials are not included.
 
@@ -40,7 +44,7 @@ These exclude the tested shortcuts, not every possible undocumented representati
 
 Recovered roles are USER=1, SYSTEM=2, UNKNOWN=3, TOOL=4 and SYSTEM_PROMPT=5. The native assistant uses historical role 2. Role 5 lost a harmless nonce; JSON `SYSTEM_PROMPT` and candidate `DEVELOPER` enums did too. It cannot currently stand in for Codex developer messages.
 
-Combining developer messages into one top-level prompt would lose their separate priorities and positions. Moving `additional_tools` into a global tool list would also change placement. Neither transformation is enabled.
+Combining developer messages into one top-level prompt would lose their separate priorities and positions. Moving `additional_tools` into a global tool list would also change placement. Strict mode rejects both transformations; compatibility mode applies them explicitly.
 
 ## What Codex sends
 
@@ -65,7 +69,7 @@ In matched captures, all six message content arrays were identical. The built-in
 
 These gates are defined in [provider capabilities](https://github.com/openai/codex/blob/rust-v0.155.1/codex-rs/model-provider/src/provider.rs), [provider configuration](https://github.com/openai/codex/blob/rust-v0.155.1/codex-rs/model-provider-info/src/lib.rs) and [web search](https://github.com/openai/codex/blob/rust-v0.155.1/codex-rs/ext/web-search/src/extension.rs). Backend-only routing also checks for a `/backend-api/codex` URL suffix. Changing the URL does not implement those routes.
 
-For `codex exec`, a process-local `CODEX_API_KEY` replaced existing auth with the adapter token. The captured request kept message content and metadata, but lost the image-generation tool definition. Interactive TUI source disables this environment-key shortcut; its auth setup remains untested. Inbound OpenAI authorization and account headers must never become Cognition credentials.
+For `codex exec`, a process-local `CODEX_API_KEY` replaced existing auth with the adapter token. The captured request kept message content and metadata, but lost the image-generation tool definition. Interactive TUI source disables this environment-key shortcut; the compatibility launcher instead uses a tested custom-provider environment key. Inbound OpenAI authorization and account headers must never become Cognition credentials.
 
 No Codex patch is needed to reach the adapter. A patch cannot make the gateway preserve roles or namespaces that the tested route loses. [Official configuration documentation](https://developers.openai.com/codex/config-advanced).
 
@@ -75,7 +79,7 @@ The Rust adapter supports text, flat function/custom tools, unchanged Lark gramm
 
 Input audit rejects unknown semantics before inference. Checked Connect termination is required before any tool completion. Unknown tools, `tool_choice=none` violations and multiple calls fail closed. Tests cover framing, compression limits, error trailers, replay, ordering, authentication separation and downstream SSE cancellation. They make no paid calls automatically; run the repository's current tests for current counts.
 
-Live Rust checks completed a flat custom-tool/result exchange and a text/reasoning replay. An actual stock Codex request reached the adapter and received the intended 422 rejection. Codex retried five times before displaying that error; no full agent completion was demonstrated.
+Live Rust checks completed a flat custom-tool/result exchange and a text/reasoning replay. An actual stock Codex request reached the adapter and received the intended 422 rejection. Codex retried five times before displaying that error; that strict-mode run did not attempt compatibility translation.
 
 Output is buffered until checked completion because the gateway can send its response-scoped signature after answer text. The adapter puts that signature before its one associated assistant item for replay. SSE lifecycle/keepalive events can arrive earlier, but tokens do not stream live. Multi-item reasoning attachment is restricted pending a dedicated probe.
 
@@ -86,7 +90,7 @@ Sampling defaults follow the inspected Devin client; equivalence to OpenAI defau
 1. Establish native developer roles, namespace identity and `additional_tools` placement, including later tool updates.
 2. Verify encrypted function arguments, multi-item reasoning, long-session compaction and v2 delegation.
 3. Implement or explicitly reject search, images, memory and other separate backend routes.
-4. Verify interactive authentication and improve rejected-request retry behavior.
+4. Extend interactive coverage to cancellation, long sessions and expired credentials; launcher retries are disabled.
 5. Compare behavior on the same tasks and model settings. Transport success does not prove conversational parity or billing entitlement.
 
 No alternative lossless Responses route was established. Devin's `openai` backend uses separately configured provider credentials. Recovered `GetDevstralStream` and completion RPCs did not establish the needed representation and were not called. The [public API](https://docs.devin.ai/api-reference/overview) describes agent/control operations. [devin-2api](https://github.com/leookun/devin-2api/blob/e7ddc55d822283b4774495a9868d181cd7c25fb2/internal/adapter/devin/devin.go#L117) also translates through `GetChatMessage`. This bounded search does not prove that no private route exists.
@@ -99,8 +103,25 @@ Compare direct Astra with this switch first; Fusion adds another model/context. 
 
 ## Schema sources
 
-The [official Codeium extension 1.48.2](https://open-vsx.org/extension/Codeium/codeium) confirms older core fields and roles. [Third-party jeopi-catalog 16.5.1](https://registry.npmjs.org/jeopi-catalog/16.5.1) supplied newer candidate fields, selectively validated against captures. Neither is a supported current Cognition API contract.
+Recovered complete protobuf descriptors from the Go language server in [official Devin Desktop 3.10.31](https://windsurf-stable.codeiumdata.com/linux-x64/stable/b98cc43128712ba73c60cca73876f58a710aaa27/Devin-linux-x64-3.10.31.tar.gz), linked by the [download page](https://devin.ai/download). Commit `b98cc43128712ba73c60cca73876f58a710aaa27` matches the installed CLI build prefix. These replace the older extension and third-party schemas as the current field reference. They describe the shipped client, not every possible server capability or a supported API contract.
+
+| Descriptor | SHA-256 |
+| --- | --- |
+| `api_server.proto` | `ccb85afce45c576029b239bd7da3f1df9ec86854e1ca7392221cb00850faaba9` |
+| `chat.proto` | `2907de0f002bc457cf84c3514a77108fec458302e89ec76db6d84c4ec3d09aa7` |
+| `codeium_common.proto` | `a077eecd046d7e5f7143ac3974a63d175ddc1c500499f117c66ffbf0e542b395` |
+
+`exa.api_server_pb.GetChatMessageRequest` ends at field 27, `prompt_cache_key`, with no raw provider payload. `ChatToolDefinition` ends at strictness field 12, with no namespace. `ChatMessagePrompt` adds videos/documents at 20/21, but no developer role or `additional_tools` item. Completion configuration adds service tier and structured-output fields, but no verbosity or arbitrary provider request. The similarly named `exa.chat_pb.GetChatMessageRequest` is a separate local-editor message.
+
+| Alternative route | Input limitation in current descriptor |
+| --- | --- |
+| `RawGetChatMessage` | Local language-server RPC, not cloud passthrough. Takes history, system override and model selection. |
+| `GetDevstralStream` | History and tools JSON; no model selector or raw Responses body. |
+| `GetChatCompletions` / `GetStreamingExternalChatCompletions` | Older completion representations; no Responses items or native tool namespaces. |
+| `GetStreamingModelAPITextCompletion` | Allows `override_model_info`, but has no tool declarations or raw Responses body. |
+
+`ModelInfo.inference_config.openai` includes reasoning effort, service tier, extended prompt-cache retention, `reasoning_context` and cache-write control. The tool-capable `GetChatMessage` request has no model-info override. A fresh authenticated `GetCliModelConfigs` read succeeded, but all ten direct Astra aliases omitted `inference_config`, leaving reasoning context undisclosed. Medium advertised 1,000,000 maximum tokens, 128,000 output tokens, and image/tool/thinking/parallel-call support. These are advertised capabilities, not tested limits or proof of Responses parity. The returned generic inference URL did not establish a raw provider endpoint or show that enterprise credentials work there.
 
 Key fields: request prompt 2, history 3, tools 10, model 21; history signature 12, signature type 18, phase 19; tool custom flag 9, grammar 10–11, newer strictness 12; response signature 10, signature type 21, actual-model UID 23, phase 25. Completion field 3 is max newlines, not context length. Strictness numbering differs between schema versions.
 
-Devin binary strings contain namespace types but also multiple inference backends. Their presence does not prove gateway support; no complete executed namespace conversion was recovered from assembly. The inspected [opencodex adapter](https://github.com/lidge-jun/opencodex/tree/134c92a01b120162f00c7275189cc47858720379/src/adapters/devin/cloud-direct) rewrites instructions/tools and omits newer state. It is a framing reference, not a parity baseline.
+The installed CLI is stripped ARM64, not x86. Disassembly located references to the cloud `GetChatMessage` and `GetDevstralStream` routes and translation source metadata. No complete executed namespace conversion was recovered. Namespace strings also belong to other inference backends, so their presence does not prove gateway support. The inspected [opencodex adapter](https://github.com/lidge-jun/opencodex/tree/134c92a01b120162f00c7275189cc47858720379/src/adapters/devin/cloud-direct) rewrites instructions/tools and omits newer state. It is a framing reference, not a parity baseline.

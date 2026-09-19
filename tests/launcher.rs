@@ -19,7 +19,11 @@ async fn forwards_exit_status_and_stops_child_group_on_signal() {
         .unwrap();
     let shell = String::from_utf8(shell.stdout).unwrap();
     let script = dir.join("codex");
-    fs::write(&script, format!("#!{}\nexit 7\n", shell.trim())).unwrap();
+    let prefix = format!(
+        "#!{}\nif [ \"$1\" = debug ]; then echo '{{\"models\":[{{\"slug\":\"gpt-6-astra\"}}]}}'; exit 0; fi\n",
+        shell.trim()
+    );
+    fs::write(&script, format!("{prefix}exit 7\n")).unwrap();
     fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_devin-codex"));
     command
@@ -39,7 +43,7 @@ async fn forwards_exit_status_and_stops_child_group_on_signal() {
         .kill_on_drop(true);
     assert_eq!(command.status().await.unwrap().code(), Some(7));
 
-    fs::write(&script, format!("#!{}\ntrap 'touch \"$DEVIN_CODEX_TEST_DIR/stopped\"; exit 0' TERM\nsleep 60 &\necho $$ > \"$DEVIN_CODEX_TEST_DIR/ready\"\nwait\n", shell.trim())).unwrap();
+    fs::write(&script, format!("{prefix}trap 'touch \"$DEVIN_CODEX_TEST_DIR/stopped\"; exit 0' TERM\nsleep 60 &\necho $$ > \"$DEVIN_CODEX_TEST_DIR/ready\"\nwait\n")).unwrap();
     let mut child = command.spawn().unwrap();
     let ready = dir.join("ready");
     tokio::time::timeout(Duration::from_secs(5), async {

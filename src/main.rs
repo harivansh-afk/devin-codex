@@ -11,13 +11,13 @@ use std::{
 #[derive(Parser)]
 #[command(
     version,
-    about = "Experimental Responses adapter. Full Codex parity is not yet supported."
+    about = "Run Codex with Devin inference. Starts the TUI when no command is given."
 )]
 struct Cli {
     #[arg(long, global = true)]
     credentials: Option<PathBuf>,
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Subcommand)]
@@ -28,6 +28,9 @@ enum Command {
         port: u16,
         #[arg(long)]
         token_file: Option<PathBuf>,
+        /// Translate Codex instructions and tool namespaces (lossy).
+        #[arg(long)]
+        compatibility: bool,
     },
     /// Check a JSON request without sending inference. Use - for stdin.
     Audit { request: PathBuf },
@@ -35,11 +38,11 @@ enum Command {
     Token { path: PathBuf },
     /// Test live inference and a tool-result round trip. Uses Devin credits.
     Test,
-    /// Run installed Codex exec through a temporary adapter. Full requests still fail.
+    /// Launch Codex through the adapter. Pass Codex arguments after --.
     Run {
         #[arg(long, default_value = "codex")]
         codex: PathBuf,
-        #[arg(last = true, required = true)]
+        #[arg(last = true)]
         args: Vec<OsString>,
     },
 }
@@ -56,7 +59,10 @@ async fn main() -> ExitCode {
 }
 
 async fn run(cli: Cli) -> Result<u8, &'static str> {
-    match cli.command {
+    match cli.command.unwrap_or(Command::Run {
+        codex: PathBuf::from("codex"),
+        args: Vec::new(),
+    }) {
         Command::Token { path } => {
             config::write_token(&path)
                 .map_err(|_| "Cannot create private token file; it may already exist.")?;
@@ -88,7 +94,11 @@ async fn run(cli: Cli) -> Result<u8, &'static str> {
             );
             Ok(u8::from(!problems.is_empty()))
         }
-        Command::Serve { port, token_file } => {
+        Command::Serve {
+            port,
+            token_file,
+            compatibility,
+        } => {
             let credentials = config::load_credentials(cli.credentials.as_deref()).map_err(
                 |_| "Cannot load Devin credentials; check the file and deployment origin.",
             )?;
@@ -101,19 +111,24 @@ async fn run(cli: Cli) -> Result<u8, &'static str> {
                 tokio::net::TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, port))
                     .await
                     .map_err(|_| "Cannot bind loopback listener.")?;
-            println!(
-                "Serving verified subset on http://127.0.0.1:{port}/v1; full Codex parity is blocked."
-            );
-            axum::serve(listener, server::router(credentials, token, gateway))
-                .with_graceful_shutdown(session::shutdown())
-                .await
-                .map_err(|_| "HTTP server failed.")?;
+            println!("Serving on http://127.0.0.1:{port}/v1 (compatibility={compatibility}).");
+            axum::serve(
+                listener,
+                server::router_with_mode(credentials, token, gateway, compatibility),
+            )
+            .with_graceful_shutdown(session::shutdown())
+            .await
+            .map_err(|_| "HTTP server failed.")?;
             Ok(0)
         }
         command => {
             let credentials = config::load_credentials(cli.credentials.as_deref())
                 .map_err(|_| "Cannot read Devin credentials. Sign in with Devin first.")?;
-            let session = session::Session::start(credentials).await?;
+            let session = session::Session::start_with_mode(
+                credentials,
+                matches!(command, Command::Run { .. }),
+            )
+            .await?;
             match command {
                 Command::Test => {
                     smoke::run(&session).await.map_err(
@@ -123,7 +138,7 @@ async fn run(cli: Cli) -> Result<u8, &'static str> {
                 }
                 Command::Run { codex, args } => {
                     eprintln!(
-                        "Experimental: full Codex requests are rejected. API-key mode also changes Codex's image-tool surface."
+                        "Devin compatibility mode: translated instructions/tools; web and image generation unavailable."
                     );
                     session.run(&codex, &args).await
                 }

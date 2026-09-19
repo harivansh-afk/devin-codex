@@ -1,8 +1,8 @@
 [package]
 name = "devin-codex"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
-description = "A strict, experimental Responses adapter for Devin inference"
+description = "Run Codex with Devin inference"
 publish = false
 
 [dependencies]

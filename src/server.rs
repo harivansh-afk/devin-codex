@@ -22,13 +22,24 @@ struct AppState {
     credentials: Credentials,
     authorization: Vec<u8>,
     gateway: GatewayClient,
+    compatibility: bool,
 }
 
 pub fn router(credentials: Credentials, token: String, gateway: GatewayClient) -> Router {
+    router_with_mode(credentials, token, gateway, false)
+}
+
+pub fn router_with_mode(
+    credentials: Credentials,
+    token: String,
+    gateway: GatewayClient,
+    compatibility: bool,
+) -> Router {
     let state = Arc::new(AppState {
         credentials,
         authorization: format!("Bearer {token}").into_bytes(),
         gateway,
+        compatibility,
     });
     Router::new()
         .route("/healthz", get(health))
@@ -68,8 +79,10 @@ async fn authenticate(
     next.run(request).await
 }
 
-async fn health() -> Json<Value> {
-    Json(json!({"status":"ok", "mode":"verified-subset", "codex_parity":false}))
+async fn health(State(state): State<Arc<AppState>>) -> Json<Value> {
+    Json(
+        json!({"status":"ok", "mode":if state.compatibility {"compatibility"} else {"verified-subset"}, "codex_parity":false}),
+    )
 }
 
 async fn unsupported(headers: HeaderMap) -> Response {
@@ -151,13 +164,21 @@ async fn respond(
             );
         }
     };
-    let translated = match translate_request(&body, &state.credentials) {
+    let prepared = if state.compatibility {
+        crate::compat::Compatibility::prepare(&body)
+    } else {
+        Ok((body.clone(), crate::compat::Compatibility::default()))
+    };
+    let translated = prepared.and_then(|(request, mapping)| {
+        translate_request(&request, &state.credentials).map(|translated| (translated, mapping))
+    });
+    let (translated, mapping) = match translated {
         Ok(value) => value,
         Err(problems) => return (
             StatusCode::UNPROCESSABLE_ENTITY,
             Json(json!({"error": {
                 "type":"invalid_request_error", "code":"unsupported_semantics",
-                "message":"Request has unsupported or unverified semantics.", "unsupported":problems
+                "message":format!("Unsupported request: {}", problems.iter().take(3).map(|p| format!("{}: {}", p.path, p.reason)).collect::<Vec<_>>().join("; ")), "unsupported":problems
             }})),
         )
             .into_response(),
@@ -168,6 +189,7 @@ async fn respond(
         translated.tool_map,
         translated.allow_tools,
     );
+    translator.compatibility = state.compatibility;
     let frames = state.gateway.stream(translated.request);
     let events = async_stream::stream! {
         for event in translator.created_events() { yield event; }
@@ -190,6 +212,10 @@ async fn respond(
             }
         }
     };
+    let events = events.map(move |mut event| {
+        mapping.restore(&mut event);
+        event
+    });
     if streaming {
         let stream = events.map(|event| {
             let kind = event
