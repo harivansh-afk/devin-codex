@@ -176,7 +176,7 @@ async fn respond(
         while let Some(frame) = frames.next().await {
             match frame {
                 Ok(frame) => match translator.push(frame) {
-                    Ok(events) => for event in events { yield event; },
+                    Ok(()) => {},
                     Err(_) => { failed = true; break; }
                 },
                 Err(_) => { failed = true; break; }

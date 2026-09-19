@@ -4,3 +4,5 @@ pub mod proto;
 pub mod request;
 pub mod responses;
 pub mod server;
+pub mod session;
+pub mod smoke;
