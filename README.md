@@ -24,27 +24,56 @@ devin-codex run -- --no-alt-screen
 selects a Devin credentials file. The flake packages the adapter; Codex must be
 on PATH. Flake consumers can use `inputs.devin-codex.packages.${system}.default`.
 
+## Model and reasoning
+
+The header and `/model` selector show `gpt-6-astra-devin`. This is a local routing
+label, not a different model: the adapter requests Devin's `gpt-6-astra-<effort>` alias.
+Use the normal `/model` selector to choose Low, Medium, High, Extra high, or
+More reasoning → Max. Ultra and Fast/priority tiers are not supported or advertised.
+The selector saves to Codex's `devin-codex` profile, so reasoning choices persist
+without changing ordinary Codex defaults.
+
 ## What changes
 
 The launcher starts an authenticated loopback adapter and a child Codex process.
-It uses the installed Codex's bundled Astra catalog, your existing configuration,
-and a temporary provider token. Your saved login and configuration are not changed.
+It uses the installed Codex's bundled Astra harness settings, your existing base
+configuration, the `devin-codex` profile, and a temporary provider token. Codex writes
+profile settings to `$CODEX_HOME/devin-codex.config.toml` (normally under `~/.codex`);
+your base configuration and saved login are not rewritten by the launcher.
 The server and temporary catalog close with the session. Resume through
 `devin-codex run -- resume`, not the plain `codex resume` command printed by Codex.
 
 Compatibility mode combines developer instructions into the gateway system prompt,
 joins text parts, and flattens tool namespaces. Tool names are restored on replies;
-custom grammars, arguments and local execution stay intact. Gateway calls are serial;
-concurrency inside Codex code mode remains available. This changes model behavior.
+custom grammars, arguments and local execution stay intact. Each gateway response
+allows one tool call; separate agent requests and concurrency inside Codex code mode
+remain available. This changes model behavior.
 
-Tested live: file reads, patches, shell commands, test execution, multiple TUI turns and session resume.
+Subagents use stock Codex v2 with plaintext task messages: the adapter removes the
+`encrypted` schema marker only from collaboration message parameters and marks their
+returned calls with `encrypted_function_args: []`, Codex's native plaintext dispatch
+signal. Agent-message content is translated to text with sender/recipient identity.
+Tasks and results are plaintext in local session history, not encrypted agent
+payloads. HTTPS to the gateway and opaque model-reasoning replay are unchanged.
+Existing encrypted agent messages still fail explicitly; start a fresh child/session
+rather than expecting old encrypted handoffs to become readable.
+
+Tested live: file reads, patches, shell commands, tests, multiple TUI turns, resume,
+parallel children with inherited history, child progress messages, follow-up tasks,
+manual compaction, and automatic compaction under a test-only lowered threshold.
+No shared background server is required for these in-session subagents. Cross-session
+`codex agents` background-server management is not provided by the launcher.
 Full Codex parity is not claimed. Current gaps:
 
 - Output arrives after each gateway response finishes, not token by token.
 - Images, native web search and image generation are unavailable.
 - Reasoning-context, summary, verbosity and service-tier settings are not forwarded.
-- Long-session compaction, delegation and dynamic tool updates need more testing.
-- Only `gpt-6-astra` is exposed; gateway aliases select the requested reasoning effort.
+- Encrypted agent histories remain unsupported; new delegation uses plaintext instead.
+- Compaction uses Codex's local summarization path, not native remote compaction.
+  Completed tool history is retained even when its tool definitions are no longer
+  advertised. Long-session reliability and dynamic tool updates need more testing.
+- Only Astra is exposed. Standard token totals can be unavailable when the gateway
+  reports cache usage; the context indicator is not a reliable billing/usage meter.
 
 Local MCP tools use the same translation, but have not been live-tested.
 Unsupported content fails explicitly. [Protocol findings](docs/protocol.md).

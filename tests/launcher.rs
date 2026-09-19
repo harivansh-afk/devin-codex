@@ -20,7 +20,7 @@ async fn forwards_exit_status_and_stops_child_group_on_signal() {
     let shell = String::from_utf8(shell.stdout).unwrap();
     let script = dir.join("codex");
     let prefix = format!(
-        "#!{}\nif [ \"$1\" = debug ]; then echo '{{\"models\":[{{\"slug\":\"gpt-6-astra\"}}]}}'; exit 0; fi\n",
+        "#!{}\nif [ \"$1\" = debug ]; then echo '{{\"models\":[{{\"slug\":\"gpt-6-astra\",\"supported_reasoning_levels\":[{{\"effort\":\"medium\"}}]}}]}}'; exit 0; fi\n[ \"$1\" = --profile ] && [ \"$2\" = devin-codex ] || exit 9\n",
         shell.trim()
     );
     fs::write(&script, format!("{prefix}exit 7\n")).unwrap();

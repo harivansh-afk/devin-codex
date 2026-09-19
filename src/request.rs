@@ -410,16 +410,18 @@ pub fn audit_request(body: &Value) -> Vec<Problem> {
                 } else {
                     "custom"
                 };
-                match field_str(item, "name").and_then(|name| tool_types.get(name)) {
-                    Some(found) if *found != expected => bad(
-                        &mut out,
-                        format!("{path}.type"),
-                        "Call kind does not match its declared tool.",
-                    ),
+                match field_str(item, "name").filter(|name| name_valid(name)) {
+                    Some(name) if tool_types.get(name).is_some_and(|found| *found != expected) => {
+                        bad(
+                            &mut out,
+                            format!("{path}.type"),
+                            "Call kind does not match its declared tool.",
+                        )
+                    }
                     None => bad(
                         &mut out,
                         format!("{path}.name"),
-                        "Call has no matching declared tool.",
+                        "Expected an unqualified historical tool name.",
                     ),
                     _ => {}
                 }
@@ -480,6 +482,9 @@ pub fn audit_request(body: &Value) -> Vec<Problem> {
                 for (key, part_type) in [("summary", "summary_text"), ("content", "reasoning_text")]
                 {
                     if let Some(parts) = item.get(key) {
+                        if key == "content" && parts.is_null() {
+                            continue;
+                        }
                         let valid = parts.as_array().is_some_and(|parts| {
                             parts.iter().all(|part| {
                                 part.as_object().is_some_and(|p| p.len() == 2)
@@ -729,6 +734,26 @@ mod tests {
         assert_eq!(t.request.model, "gpt-6-astra-medium");
     }
     #[test]
+    fn completed_history_does_not_require_current_tool_definitions() {
+        let mut body = history();
+        body["tools"] = json!([]);
+        body["tool_choice"] = json!("none");
+        let translated = translate_request(&body, &creds()).unwrap();
+        assert!(translated.request.tools.is_empty());
+        assert!(translated.tool_map.is_empty());
+        assert!(!translated.allow_tools);
+        assert_eq!(translated.request.messages[0].tool_calls[0].name, "run");
+        assert_eq!(translated.request.messages[1].content, "done");
+        for invalid in ["", "namespace.run", "with spaces"] {
+            body["input"][0]["name"] = json!(invalid);
+            assert!(translate_request(&body, &creds()).is_err());
+        }
+        let mut body = history();
+        body["input"][0]["type"] = json!("custom_tool_call");
+        assert!(translate_request(&body, &creds()).is_err());
+    }
+
+    #[test]
     fn invalid_json_types_never_panic() {
         for value in [Value::Null, json!([]), json!({}), json!(1), json!(true)] {
             for target in [
@@ -766,6 +791,11 @@ mod tests {
         );
         assert_eq!(t.request.messages[0].reasoning_type, "openai");
         assert_eq!(t.request.messages[0].phase, "commentary");
+        body["input"][0]["content"] = Value::Null;
+        let t = translate_request(&body, &creds()).unwrap();
+        let replay: Value = serde_json::from_str(&t.request.messages[0].reasoning).unwrap();
+        assert!(replay[0]["content"].is_null());
+        assert_eq!(replay[0]["encrypted_content"], "opaque");
     }
     #[test]
     fn grammar_and_false_strict_preserved() {
