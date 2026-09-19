@@ -20,6 +20,7 @@ pub enum ToolKind {
 pub struct Error(pub &'static str);
 
 pub struct Translator {
+    pub compatibility: bool,
     model: String,
     response_id: String,
     created_at: u64,
@@ -43,6 +44,7 @@ pub struct Translator {
 impl Translator {
     pub fn new(model: String, tool_map: HashMap<String, ToolKind>, allow_tools: bool) -> Self {
         Self {
+            compatibility: false,
             model,
             response_id: format!("resp_{}", uuid::Uuid::new_v4().simple()),
             created_at: SystemTime::now()
@@ -320,7 +322,7 @@ impl Translator {
             if self.output.len() == 1 {
                 return Err(Error("Reasoning has no assistant output for replay"));
             }
-            if self.output.len() > 2 {
+            if self.output.len() > 2 && !self.compatibility {
                 return Err(Error(
                     "Reasoning attachment to multiple assistant items is unverified",
                 ));
@@ -741,6 +743,30 @@ mod tests {
             t.finish().unwrap_err().0,
             "Reasoning attachment to multiple assistant items is unverified"
         );
+    }
+
+    #[test]
+    fn compatibility_attaches_signed_reasoning_before_assistant_turn() {
+        let mut t = translator();
+        t.compatibility = true;
+        t.push(ChatResponse {
+            delta_text: "commentary".into(),
+            phase: "commentary".into(),
+            ..Default::default()
+        })
+        .unwrap();
+        t.push(call(true)).unwrap();
+        t.push(ChatResponse {
+            delta_signature: json!([reasoning()]).to_string(),
+            delta_signature_type: "openai".into(),
+            ..Default::default()
+        })
+        .unwrap();
+        let events = t.finish().unwrap();
+        let output = &events.last().unwrap()["response"]["output"];
+        assert_eq!(output[0], reasoning());
+        assert_eq!(output[1]["phase"], "commentary");
+        assert_eq!(output[2]["name"], "exec");
     }
 
     #[test]

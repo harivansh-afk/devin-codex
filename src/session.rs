@@ -4,7 +4,11 @@ use crate::{
     gateway::GatewayClient,
     server,
 };
-use std::{ffi::OsString, path::Path};
+use std::{
+    ffi::OsString,
+    io::Write,
+    path::{Path, PathBuf},
+};
 use tokio::{net::TcpListener, process::Command, sync::oneshot};
 
 #[cfg(unix)]
@@ -24,6 +28,59 @@ impl Drop for ProcessGroup {
     }
 }
 
+struct Catalog(PathBuf);
+
+impl Catalog {
+    async fn load(binary: &Path) -> Result<Self, &'static str> {
+        let output = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            Command::new(binary)
+                .args(["debug", "models", "--bundled"])
+                .kill_on_drop(true)
+                .output(),
+        )
+        .await
+        .map_err(|_| "Timed out reading Codex's bundled model catalog.")?
+        .map_err(|_| "Cannot start Codex. Install it on PATH or use --codex.")?;
+        let mut value: serde_json::Value = serde_json::from_slice(&output.stdout).map_err(
+            |_| "Cannot read Codex model catalog. Codex 0.155.1 or compatible is required.",
+        )?;
+        if !output.status.success()
+            || !value["models"]
+                .as_array()
+                .is_some_and(|models| models.iter().any(|m| m["slug"] == "gpt-6-astra"))
+        {
+            return Err("Installed Codex does not provide the gpt-6-astra model catalog.");
+        }
+        value["models"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|m| m["slug"] == "gpt-6-astra");
+        let bytes = serde_json::to_vec(&value).map_err(|_| "Cannot encode model catalog.")?;
+        let path = std::env::temp_dir().join(format!("devin-codex-models-{}.json", random_token()));
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options
+            .open(&path)
+            .map_err(|_| "Cannot create temporary model catalog.")?;
+        let catalog = Self(path);
+        file.write_all(&bytes)
+            .map_err(|_| "Cannot write temporary model catalog.")?;
+        Ok(catalog)
+    }
+}
+
+impl Drop for Catalog {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 pub struct Session {
     pub url: String,
     pub token: String,
@@ -32,6 +89,13 @@ pub struct Session {
 
 impl Session {
     pub async fn start(credentials: Credentials) -> Result<Self, &'static str> {
+        Self::start_with_mode(credentials, false).await
+    }
+
+    pub async fn start_with_mode(
+        credentials: Credentials,
+        compatibility: bool,
+    ) -> Result<Self, &'static str> {
         let gateway = GatewayClient::new(&credentials.endpoint, &credentials.api_key)
             .map_err(|_| "Cannot configure gateway transport.")?;
         let listener = TcpListener::bind("127.0.0.1:0")
@@ -44,7 +108,7 @@ impl Session {
                 .map_err(|_| "Cannot read listener address.")?
         );
         let token = random_token();
-        let router = server::router(credentials, token.clone(), gateway);
+        let router = server::router_with_mode(credentials, token.clone(), gateway, compatibility);
         let (stop, stopped) = oneshot::channel();
         tokio::spawn(async move {
             let _ = axum::serve(listener, router)
@@ -61,9 +125,11 @@ impl Session {
     }
 
     pub async fn run(&self, binary: &Path, args: &[OsString]) -> Result<u8, &'static str> {
-        let mut command = self.command(binary, args)?;
+        let catalog = Catalog::load(binary).await?;
+        let mut command = self.command(binary, args, Some(&catalog.0))?;
+        let detached = args.first().is_some_and(|a| a == "exec");
         #[cfg(unix)]
-        {
+        if detached {
             use std::os::unix::process::CommandExt;
             command.as_std_mut().process_group(0);
         }
@@ -72,17 +138,18 @@ impl Session {
             .spawn()
             .map_err(|_| "Cannot start Codex. Install it on PATH or use --codex.")?;
         #[cfg(unix)]
-        let group = ProcessGroup(nix::unistd::Pid::from_raw(child.id().unwrap() as i32));
+        let group =
+            detached.then(|| ProcessGroup(nix::unistd::Pid::from_raw(child.id().unwrap() as i32)));
         tokio::select! {
             status = child.wait() => Ok(status.map_err(|_| "Cannot wait for Codex.")?.code().unwrap_or(1) as u8),
             _ = shutdown() => {
                 #[cfg(unix)]
-                group.signal(nix::sys::signal::Signal::SIGTERM);
+                if let Some(group) = &group { group.signal(nix::sys::signal::Signal::SIGTERM); } else { let _ = nix::sys::signal::kill(nix::unistd::Pid::from_raw(child.id().unwrap() as i32), nix::sys::signal::Signal::SIGTERM); }
                 #[cfg(not(unix))]
                 let _ = child.start_kill();
                 if tokio::time::timeout(std::time::Duration::from_secs(3), child.wait()).await.is_err() {
                     #[cfg(unix)]
-                    group.signal(nix::sys::signal::Signal::SIGKILL);
+                    if let Some(group) = &group { group.signal(nix::sys::signal::Signal::SIGKILL); }
                     let _ = child.kill().await;
                 }
                 Ok(130)
@@ -90,14 +157,14 @@ impl Session {
         }
     }
 
-    fn command(&self, binary: &Path, args: &[OsString]) -> Result<Command, &'static str> {
-        if args.first().and_then(|arg| arg.to_str()) != Some("exec") {
-            return Err(
-                "Only Codex exec is supported. Use: devin-codex run -- exec 'task'. Interactive auth is not verified.",
-            );
-        }
+    fn command(
+        &self,
+        binary: &Path,
+        args: &[OsString],
+        catalog: Option<&Path>,
+    ) -> Result<Command, &'static str> {
         // Keep routing under this launcher's control. No shell interprets arguments.
-        for arg in &args[1..] {
+        for arg in args {
             let arg = arg.to_string_lossy();
             if [
                 "-c",
@@ -121,12 +188,26 @@ impl Session {
             }
         }
         let mut command = Command::new(binary);
+        for setting in [
+            "model_provider=\"devin\"".to_owned(),
+            "model=\"gpt-6-astra\"".to_owned(),
+            format!(
+                "model_providers.devin={{name=\"Devin\",base_url=\"{}\",wire_api=\"responses\",env_key=\"DEVIN_CODEX_SESSION_TOKEN\",requires_openai_auth=false,supports_websockets=false,request_max_retries=0,stream_max_retries=0}}",
+                self.url
+            ),
+            "web_search=\"disabled\"".to_owned(),
+        ] {
+            command.arg("-c").arg(setting);
+        }
+        if let Some(path) = catalog {
+            command.arg("-c").arg(format!(
+                "model_catalog_json={}",
+                toml::Value::String(path.to_string_lossy().into_owned())
+            ));
+        }
         command
-            .arg("exec")
-            .args(["-m", "gpt-6-astra", "-c", "model_provider=\"openai\"", "-c"])
-            .arg(format!("openai_base_url=\"{}\"", self.url))
-            .args(&args[1..])
-            .env("CODEX_API_KEY", &self.token);
+            .args(args)
+            .env("DEVIN_CODEX_SESSION_TOKEN", &self.token);
         Ok(command)
     }
 }
@@ -184,6 +265,7 @@ mod tests {
             .command(
                 Path::new("codex"),
                 &["exec".into(), "a task with spaces".into()],
+                None,
             )
             .unwrap();
         let command = command.as_std();
@@ -192,15 +274,24 @@ mod tests {
             *args.last().unwrap(),
             std::ffi::OsStr::new("a task with spaces")
         );
-        assert!(command.get_envs().any(|(key, value)| key == "CODEX_API_KEY"
-            && value == Some(std::ffi::OsStr::new(&session.token))));
+        assert!(
+            command
+                .get_envs()
+                .any(|(key, value)| key == "DEVIN_CODEX_SESSION_TOKEN"
+                    && value == Some(std::ffi::OsStr::new(&session.token)))
+        );
         for args in [
-            vec![],
-            vec!["resume".into()],
             vec!["exec".into(), "-cmodel_provider=other".into()],
+            vec!["--profile=other".into()],
         ] {
-            assert!(session.command(Path::new("codex"), &args).is_err());
+            assert!(session.command(Path::new("codex"), &args, None).is_err());
         }
+        assert!(session.command(Path::new("codex"), &[], None).is_ok());
+        assert!(
+            session
+                .command(Path::new("codex"), &["resume".into()], None)
+                .is_ok()
+        );
         drop(session);
         tokio::task::yield_now().await;
         assert!(client.get(url).send().await.is_err());

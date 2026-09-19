@@ -1,67 +1,53 @@
 # devin-codex
 
-Rust adapter for Devin inference. Uses your existing Devin login.
-
-```text
-Codex CLI → local Responses API → Devin gateway
-```
-
-**Not ready for daily Codex use.** Text and flat tools work. Full Codex requests
-are rejected because developer roles and tool namespaces have no verified mapping.
-The adapter adds no model instructions or tools.
-
-## Install and test
-
-From this checkout:
-
-```sh
-nix run . -- --help
-nix run . -- test
-```
-
-`test` starts a private loopback server, makes two inference requests, checks a
-custom-tool result, then stops. It uses Devin credits. It executes no generated code.
-Sign in with Devin first. Use `--credentials PATH` for a different credentials file.
-
-Install the CLI after this change is merged:
+Use the Codex TUI with Devin inference. Rust adapter; no Codex fork.
+Requires an installed Codex with the Astra catalog (tested: 0.155.1) and a Devin login.
+Inference uses your Devin account and may consume credits.
 
 ```sh
 nix profile add git+https://git.harivan.sh/harivansh-afk/devin-codex
+devin-codex
 ```
 
-A host flake can use `inputs.devin-codex.packages.${system}.default` in its package list.
-The flake packages the adapter only; Codex must already be on PATH.
+From this checkout: `nix run .`. To update an existing install:
+`nix profile upgrade devin-codex`.
 
-## Test the Codex route
+Pass Codex arguments after `run --`:
 
 ```sh
-devin-codex run -- exec --ephemeral 'Reply hello'
+devin-codex run -- resume --last
+devin-codex run -- exec 'Fix the failing tests'
+devin-codex run -- --no-alt-screen
 ```
 
-This starts the adapter on a random loopback port and launches the installed
-`codex exec`. It sets a local token and URL for that child only. It keeps your
-Codex configuration, closes the listener on exit, and returns Codex's exit code.
-Use `run --codex /path/to/codex -- exec ...` to select a binary.
+`run --codex PATH -- ...` selects another Codex binary. `--credentials PATH`
+selects a Devin credentials file. The flake packages the adapter; Codex must be
+on PATH. Flake consumers can use `inputs.devin-codex.packages.${system}.default`.
 
-**Expect an unsupported-request error today.** This tests routing, not a working
-agent session. Interactive launch is not supported. API-key mode also changes
-Codex's image-tool selection. No Codex fork is required for this route.
+## What changes
 
-For a standalone server: `devin-codex token token-file`, then
-`devin-codex serve --token-file token-file`. The endpoint is
-`http://127.0.0.1:19476/v1/responses`; send the token as Bearer authorization.
-Use `devin-codex audit request.json` to check a request without inference.
+The launcher starts an authenticated loopback adapter and a child Codex process.
+It uses the installed Codex's bundled Astra catalog, your existing configuration,
+and a temporary provider token. Your saved login and configuration are not changed.
+The server and temporary catalog close with the session. Resume through
+`devin-codex run -- resume`, not the plain `codex resume` command printed by Codex.
 
-## Before production
+Compatibility mode combines developer instructions into the gateway system prompt,
+joins text parts, and flattens tool namespaces. Tool names are restored on replies;
+custom grammars, arguments and local execution stay intact. Gateway calls are serial;
+concurrency inside Codex code mode remains available. This changes model behavior.
 
-- Find a gateway route that preserves developer roles, namespaces and Responses Lite.
-- Verify reasoning replay, compaction, resume, delegation, images and search.
-- Restore token streaming; content is currently buffered for late reasoning signatures.
-- Verify interactive auth, credential renewal, limits and billing.
-- Compare repeated short and long tasks against native Codex.
+Tested live: file reads, patches, shell commands, test execution, multiple TUI turns and session resume.
+Full Codex parity is not claimed. Current gaps:
 
-A client patch cannot restore fields the gateway drops. These remain protocol
-work, not packaging work. [Evidence and sources](docs/protocol.md).
+- Output arrives after each gateway response finishes, not token by token.
+- Images, native web search and image generation are unavailable.
+- Reasoning-context, summary, verbosity and service-tier settings are not forwarded.
+- Long-session compaction, delegation and dynamic tool updates need more testing.
+- Only `gpt-6-astra` is exposed; gateway aliases select the requested reasoning effort.
+
+Local MCP tools use the same translation, but have not been live-tested.
+Unsupported content fails explicitly. [Protocol findings](docs/protocol.md).
 
 ## Development
 
@@ -73,6 +59,7 @@ cargo fmt --check
 nix flake check
 ```
 
-`src/` holds the CLI, gateway types, translation and HTTP server. Unit tests sit
-with their modules; `tests/` covers HTTP behavior. Tests use fake gateways and do
-not spend inference credits. `Cargo.lock` and `flake.lock` pin dependencies.
+Tests use fake gateways. `devin-codex test` makes two live inference calls without
+executing generated code. `audit request.json` checks the strict API subset.
+`serve --token-file PATH` serves that subset; add `--compatibility` for Codex
+translation. Create a private token file with `devin-codex token PATH`.
