@@ -233,6 +233,137 @@ async fn collaboration_plaintext_sse_and_history_roundtrip() {
 }
 
 #[tokio::test]
+async fn stream_failures_preserve_safe_causes_without_partial_output() {
+    let frame = |payload: Vec<u8>, flags: u8| {
+        let mut bytes = vec![flags];
+        bytes.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+        bytes.extend(payload);
+        bytes
+    };
+    let partial = frame(
+        ChatResponse {
+            delta_tool_calls: vec![ToolCall {
+                id: "c1".into(),
+                name: "run".into(),
+                arguments_json: "PRIVATE".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+        .encode_to_vec(),
+        0,
+    );
+    for (status, body, code, message) in [
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            b"PRIVATE".to_vec(),
+            "upstream_http_error",
+            "HTTP 503",
+        ),
+        (
+            StatusCode::OK,
+            [
+                partial.clone(),
+                frame(
+                    br#"{"error":{"code":"resource_exhausted","message":"PRIVATE"}}"#.to_vec(),
+                    2,
+                ),
+            ]
+            .concat(),
+            "resource_exhausted",
+            "resource_exhausted",
+        ),
+        (
+            StatusCode::OK,
+            [
+                frame(
+                    ChatResponse {
+                        delta_text: "PRIVATE".into(),
+                        phase: "unknown".into(),
+                        ..Default::default()
+                    }
+                    .encode_to_vec(),
+                    0,
+                ),
+                frame(b"{}".to_vec(), 2),
+            ]
+            .concat(),
+            "response_translation_error",
+            "Unsupported gateway message phase",
+        ),
+        (
+            StatusCode::OK,
+            [partial, frame(b"{}".to_vec(), 2)].concat(),
+            "response_translation_error",
+            "Incomplete function-call JSON",
+        ),
+    ] {
+        let upstream = Router::new().route(
+            "/rpc",
+            post(move || {
+                let body = body.clone();
+                async move {
+                    (
+                        status,
+                        [("content-type", "application/connect+proto")],
+                        body,
+                    )
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}/rpc", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+        let credentials = Credentials {
+            endpoint: endpoint.clone(),
+            api_key: "test-key".into(),
+            device_id: String::new(),
+            client_version: String::new(),
+        };
+        let app = server::router(
+            credentials,
+            TOKEN.into(),
+            GatewayClient::new(&endpoint, "test-key").unwrap(),
+        );
+        for streaming in [true, false] {
+            let response = app.clone().oneshot(request(json!({"model":"gpt-6-astra","input":"hello","stream":streaming,"tools":[{"type":"function","name":"run","parameters":{"type":"object"}}]}))).await.unwrap();
+            assert_eq!(
+                response.status(),
+                if streaming {
+                    StatusCode::OK
+                } else {
+                    StatusCode::BAD_GATEWAY
+                }
+            );
+            let bytes = to_bytes(response.into_body(), 65536).await.unwrap();
+            let text = String::from_utf8(bytes.to_vec()).unwrap();
+            assert!(!text.contains("PRIVATE"), "Failure leaked upstream content");
+            assert!(!text.contains("response.output_item.done"));
+            let response: Value = if streaming {
+                let events: Vec<Value> = text
+                    .lines()
+                    .filter_map(|line| line.strip_prefix("data: "))
+                    .map(|data| serde_json::from_str(data).unwrap())
+                    .collect();
+                assert_eq!(events.last().unwrap()["type"], "response.failed");
+                events.last().unwrap()["response"].clone()
+            } else {
+                serde_json::from_str(&text).unwrap()
+            };
+            assert_eq!(response["error"]["code"], code);
+            assert!(
+                response["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains(message)
+            );
+            assert_eq!(response["output"], json!([]));
+        }
+        task.abort();
+    }
+}
+
+#[tokio::test]
 async fn explicit_unsupported_routes_and_websocket_fallback() {
     let (app, _, task) = app().await;
     let req = Request::get("/v1/responses")

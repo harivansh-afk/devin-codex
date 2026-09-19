@@ -435,10 +435,11 @@ impl Translator {
         Ok(events)
     }
 
-    pub fn failed_event(&mut self) -> Value {
+    pub fn failed_event(&mut self, code: &str, message: &str) -> Value {
         self.terminal = true;
+        self.output.clear();
         let mut response = self.response("failed");
-        response["error"] = json!({"type":"server_error","code":"upstream_protocol_error","message":"Upstream inference stream failed"});
+        response["error"] = json!({"type":"server_error","code":code,"message":message});
         self.event("response.failed", json!({"response":response}))
     }
 }
@@ -573,7 +574,9 @@ mod tests {
     fn errors_and_limits_never_finalize_partial_calls() {
         let mut t = translator();
         t.push(call(false)).unwrap();
-        let failed = t.failed_event();
+        let failed = t.failed_event("upstream_timeout", "Gateway timed out");
+        assert_eq!(failed["response"]["output"], json!([]));
+        assert_eq!(failed["response"]["error"]["code"], "upstream_timeout");
         assert_eq!(failed["type"], "response.failed");
         assert!(t.finish().is_err());
         let mut t = translator();

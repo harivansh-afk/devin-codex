@@ -78,6 +78,15 @@ Full Codex parity is not claimed. Current gaps:
 Local MCP tools use the same translation, but have not been live-tested.
 Unsupported content fails explicitly. [Protocol findings](docs/protocol.md).
 
+## Stream failures
+
+Gateway connections time out after 30 seconds; reads time out after 120 seconds
+without data. An active inference stream has no two-minute total deadline.
+Failures report the safe gateway code/HTTP status or the adapter validation reason,
+not raw server messages or partial model/tool output. Automatic retries remain off.
+After a failure, inspect the reported cause before continuing the session; previously
+completed tool calls may already have changed files or external state.
+
 ## Development
 
 ```sh

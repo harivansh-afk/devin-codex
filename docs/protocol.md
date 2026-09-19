@@ -51,7 +51,30 @@ the marker and existing child's Unicode conclusion, reran all four tests, and co
 The launcher does not change the production threshold. This is not native remote
 compaction or proof of unbounded long-session reliability.
 
-Live prompts were synthetic. Private captures and credentials are not included.
+Initial live acceptance prompts were synthetic. Private captures and credentials are not included.
+
+## Stream-failure investigation (0.3.1)
+
+A reported session had two failures after completed tool results: one at 120.04
+seconds and another at 28.16 seconds. Version 0.3.0 discarded both gateway error
+codes and translator errors, reporting only `Upstream inference stream failed`.
+The exact cause of the shorter failure cannot be recovered from that log.
+
+The HTTP client also imposed a 120-second total deadline. A synthetic streaming
+server reproduced cancellation despite continuous frames. The client now uses a
+30-second connection timeout and a 120-second read-idle timeout instead; tests
+verify both continued active streaming and cancellation of a stalled stream.
+SSE and JSON failures retain safe gateway codes/statuses or static translation
+reasons, with no raw server error bodies or partial tool arguments in failed output.
+No automatic inference/tool retry was introduced.
+
+Two inference-only replays from an ephemeral fork of the reported session completed
+translation successfully, including one in the original project context. A local mock
+captured the translated request in memory and rejected Codex before any model-generated
+tools could run; replay then called the gateway directly with no tool executor attached.
+No request bodies, credentials, or user session data were committed. This did not
+reproduce or establish the historical cause of the 28-second failure; a recurrence
+with the improved diagnostics is still needed.
 
 ## Gateway tests
 
