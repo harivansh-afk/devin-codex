@@ -1,0 +1,5 @@
+.local/
+captures/
+.env
+.env.*
+!.env.example

@@ -1,0 +1,336 @@
+{
+  "date": "2026-09-19",
+  "model_uid_requested": "gpt-6-astra-medium",
+  "host": "server.enterprise.windsurf.com",
+  "notes": [
+    "Each row is one latest observed probe, not a statistical benchmark.",
+    "Some five matrix cases ran twice; this file is not a complete billing ledger.",
+    "No tools were executed: tool results were synthetic test fixtures.",
+    "Exec tests used unmodified custom-provider 12889-byte and built-in-provider 25315-byte descriptions plus the 177-byte Lark grammar, without the outer Codex namespace."
+  ],
+  "results": [
+    {
+      "name": "codex_exec_exact",
+      "status": 200,
+      "seconds": 3.289,
+      "text": "",
+      "committed_acu_cost": 0.021720999851822853,
+      "fields": {
+        "1": 10,
+        "2": 10,
+        "7": 2,
+        "12": 9,
+        "17": 9,
+        "6": 7,
+        "22": 1,
+        "28": 1
+      },
+      "trailers": [
+        {}
+      ],
+      "tool_names": [
+        "exec"
+      ],
+      "custom_flag_seen": true
+    },
+    {
+      "name": "custom_grammar",
+      "status": 200,
+      "seconds": 1.562,
+      "text": "",
+      "committed_acu_cost": 0.002795000094920397,
+      "fields": {
+        "1": 7,
+        "2": 7,
+        "7": 2,
+        "12": 6,
+        "17": 6,
+        "6": 4,
+        "22": 1,
+        "28": 1
+      },
+      "trailers": [
+        {}
+      ],
+      "tool_names": [
+        "probe_custom"
+      ],
+      "custom_flag_seen": true
+    },
+    {
+      "name": "custom_roundtrip",
+      "status": 200,
+      "seconds": 1.42,
+      "text": "CUSTOM_ROUNDTRIP_OK",
+      "committed_acu_cost": 0.0022964999079704285,
+      "fields": {
+        "1": 11,
+        "2": 11,
+        "7": 2,
+        "12": 10,
+        "17": 10,
+        "15": 1,
+        "3": 6,
+        "25": 1,
+        "22": 1,
+        "28": 1
+      },
+      "field_25": "final_answer",
+      "trailers": [
+        {}
+      ],
+      "tool_names": [],
+      "custom_flag_seen": false
+    },
+    {
+      "name": "exact_exec_description",
+      "status": 200,
+      "seconds": 1.296,
+      "text": "PROBE_OK",
+      "committed_acu_cost": 0.0023799999617040157,
+      "fields": {
+        "1": 8,
+        "2": 8,
+        "7": 2,
+        "12": 7,
+        "17": 7,
+        "15": 1,
+        "3": 3,
+        "25": 1,
+        "22": 1,
+        "28": 1
+      },
+      "field_25": "final_answer",
+      "trailers": [
+        {}
+      ],
+      "tool_names": [],
+      "custom_flag_seen": false
+    },
+    {
+      "name": "function",
+      "status": 200,
+      "seconds": 1.72,
+      "text": "",
+      "committed_acu_cost": 0.0027099999133497477,
+      "fields": {
+        "1": 11,
+        "2": 11,
+        "7": 2,
+        "12": 10,
+        "17": 10,
+        "6": 8,
+        "22": 1,
+        "28": 1
+      },
+      "trailers": [
+        {}
+      ],
+      "tool_names": [
+        "probe_echo"
+      ],
+      "custom_flag_seen": false
+    },
+    {
+      "name": "function_roundtrip",
+      "status": 200,
+      "seconds": 1.338,
+      "text": "ROUNDTRIP_OK",
+      "committed_acu_cost": 0.002575000049546361,
+      "fields": {
+        "1": 9,
+        "2": 9,
+        "7": 2,
+        "12": 8,
+        "17": 8,
+        "15": 1,
+        "3": 4,
+        "25": 1,
+        "22": 1,
+        "28": 1
+      },
+      "field_25": "final_answer",
+      "trailers": [
+        {}
+      ],
+      "tool_names": [],
+      "custom_flag_seen": false
+    },
+    {
+      "name": "long_description",
+      "status": 200,
+      "seconds": 1.447,
+      "text": "PROBE_OK",
+      "committed_acu_cost": 0.014096500352025032,
+      "fields": {
+        "1": 8,
+        "2": 8,
+        "7": 2,
+        "12": 7,
+        "17": 7,
+        "15": 1,
+        "3": 3,
+        "25": 1,
+        "22": 1,
+        "28": 1
+      },
+      "field_25": "final_answer",
+      "trailers": [
+        {}
+      ],
+      "tool_names": [],
+      "custom_flag_seen": false
+    },
+    {
+      "name": "minimal",
+      "status": 200,
+      "seconds": 1.309,
+      "text": "PROBE_OK",
+      "fields": {
+        "1": 8,
+        "2": 8,
+        "7": 2,
+        "12": 7,
+        "17": 7,
+        "15": 1,
+        "3": 3,
+        "25": 1,
+        "22": 1,
+        "28": 1
+      },
+      "field_25": "final_answer",
+      "trailers": [
+        {}
+      ],
+      "tool_names": [],
+      "custom_flag_seen": false
+    },
+    {
+      "name": "reasoning",
+      "status": 200,
+      "seconds": 6.063,
+      "text": "675636",
+      "committed_acu_cost": 0.00687999976798892,
+      "fields": {
+        "1": 125,
+        "2": 125,
+        "7": 2,
+        "12": 124,
+        "17": 124,
+        "9": 118,
+        "15": 1,
+        "3": 2,
+        "25": 1,
+        "10": 1,
+        "21": 1,
+        "22": 1,
+        "28": 1
+      },
+      "field_25": "final_answer",
+      "trailers": [
+        {}
+      ],
+      "tool_names": [],
+      "custom_flag_seen": false
+    },
+    {
+      "name": "reasoning_replay",
+      "status": 200,
+      "seconds": 2.338,
+      "text": "675637",
+      "committed_acu_cost": 0.0032999999821186066,
+      "fields": {
+        "1": 7,
+        "2": 7,
+        "7": 2,
+        "12": 6,
+        "17": 6,
+        "15": 1,
+        "3": 2,
+        "25": 1,
+        "22": 1,
+        "28": 1
+      },
+      "field_25": "final_answer",
+      "trailers": [
+        {}
+      ],
+      "tool_names": [],
+      "custom_flag_seen": false
+    },
+    {
+      "name": "system_role5",
+      "status": 200,
+      "seconds": 2.672,
+      "text": "USER_TOKEN",
+      "committed_acu_cost": 0.002099999925121665,
+      "fields": {
+        "1": 7,
+        "2": 7,
+        "7": 2,
+        "12": 6,
+        "17": 6,
+        "15": 1,
+        "3": 2,
+        "25": 1,
+        "22": 1,
+        "28": 1
+      },
+      "field_25": "final_answer",
+      "trailers": [
+        {}
+      ],
+      "tool_names": [],
+      "custom_flag_seen": false
+    },
+    {
+      "name": "system_top",
+      "status": 200,
+      "seconds": 1.25,
+      "text": "SYSTEM_TOKEN",
+      "committed_acu_cost": 0.0002849999873433262,
+      "fields": {
+        "1": 7,
+        "2": 7,
+        "7": 2,
+        "12": 6,
+        "17": 6,
+        "15": 1,
+        "3": 2,
+        "25": 1,
+        "22": 1,
+        "28": 1
+      },
+      "field_25": "final_answer",
+      "trailers": [
+        {}
+      ],
+      "tool_names": [],
+      "custom_flag_seen": false
+    },
+    {
+      "name": "codex_builtin_exec_exact",
+      "status": 200,
+      "seconds": 1.872,
+      "text": "",
+      "committed_acu_cost": 0.03979000076651573,
+      "fields": {
+        "1": 10,
+        "2": 10,
+        "7": 2,
+        "12": 9,
+        "17": 9,
+        "6": 7,
+        "22": 1,
+        "28": 1
+      },
+      "trailers": [
+        {}
+      ],
+      "tool_names": [
+        "exec"
+      ],
+      "custom_flag_seen": true
+    }
+  ]
+}
