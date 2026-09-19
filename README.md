@@ -1,8 +1,8 @@
 # devin-codex
 
-Use the Codex TUI with Devin inference. Rust adapter; no Codex fork.
+Use the Codex TUI with Devin inference.
+
 Requires an installed Codex with the Astra catalog (tested: 0.155.1) and a Devin login.
-Inference uses your Devin account and may consume credits.
 
 ```sh
 nix profile add git+https://git.harivan.sh/harivansh-afk/devin-codex
@@ -24,21 +24,14 @@ devin-codex run -- --no-alt-screen
 selects a Devin credentials file. The flake packages the adapter; Codex must be
 on PATH. Flake consumers can use `inputs.devin-codex.packages.${system}.default`.
 
-## Model and reasoning
-
-The header and `/model` selector show `gpt-6-astra-devin`. This is a local routing
-label, not a different model: the adapter requests Devin's `gpt-6-astra-<effort>` alias.
-Use the normal `/model` selector to choose Low, Medium, High, Extra high, or
-More reasoning → Max. Ultra and Fast/priority tiers are not supported or advertised.
-The selector saves to Codex's `devin-codex` profile, so reasoning choices persist
-without changing ordinary Codex defaults.
-
 ## What changes
 
 The launcher starts an authenticated loopback adapter and a child Codex process.
 It uses the installed Codex's bundled Astra harness settings, your existing base
-configuration, the `devin-codex` profile, and a temporary provider token. Codex writes
-profile settings to `$CODEX_HOME/devin-codex.config.toml` (normally under `~/.codex`);
+configuration, the `devin-codex` profile, and a temporary provider token. 
+
+
+Codex writes profile settings to `$CODEX_HOME/devin-codex.config.toml` (normally under `~/.codex`);
 your base configuration and saved login are not rewritten by the launcher.
 The server and temporary catalog close with the session. Resume through
 `devin-codex run -- resume`, not the plain `codex resume` command printed by Codex.
