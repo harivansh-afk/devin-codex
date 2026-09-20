@@ -311,13 +311,17 @@ impl Translator {
             }
             let mut signature: Vec<Value> = serde_json::from_str(&self.signature)
                 .map_err(|_| Error("Malformed reasoning signature"))?;
-            if signature.len() != 1 {
-                return Err(Error("Unsupported reasoning signature shape"));
+            if signature.is_empty() {
+                return Err(Error("Empty reasoning signature cannot be replayed"));
             }
-            let mut item = signature.remove(0);
-            validate_reasoning(&item)?;
-            if item.get("summary").is_none() {
-                item["summary"] = json!([]);
+            if self.output.len() - 1 + signature.len() > MAX_ITEMS {
+                return Err(Error("Gateway response exceeds output item limit"));
+            }
+            for item in &mut signature {
+                validate_reasoning(item)?;
+                if item.get("summary").is_none() {
+                    item["summary"] = json!([]);
+                }
             }
             if self.output.len() == 1 {
                 return Err(Error("Reasoning has no assistant output for replay"));
@@ -330,7 +334,7 @@ impl Translator {
             // The gateway returns response-scoped signed state, sometimes only
             // after text. Responses history places it before its assistant turn.
             self.output.remove(index);
-            self.output.insert(0, item);
+            self.output.splice(0..0, signature);
         }
         let mut ids = std::collections::HashSet::new();
         if self
@@ -438,6 +442,20 @@ impl Translator {
     pub fn failed_event(&mut self, code: &str, message: &str) -> Value {
         self.terminal = true;
         self.output.clear();
+        let mut message = message.to_owned();
+        if code == "response_translation_error"
+            && let Ok(items) = serde_json::from_str::<Vec<Value>>(&self.signature)
+        {
+            let reasoning = items
+                .iter()
+                .filter(|item| item["type"] == "reasoning")
+                .count();
+            message.push_str(&format!(
+                " (signature_items={}, reasoning_items={reasoning}, other_items={})",
+                items.len(),
+                items.len() - reasoning
+            ));
+        }
         let mut response = self.response("failed");
         response["error"] = json!({"type":"server_error","code":code,"message":message});
         self.event("response.failed", json!({"response":response}))
@@ -629,6 +647,128 @@ mod tests {
         let events = t.finish().unwrap();
         assert_eq!(events.last().unwrap()["response"]["output"][0], reasoning());
         assert!(!serde_json::to_string(&events).unwrap().contains("PRIVATE"));
+    }
+
+    #[test]
+    fn multiple_reasoning_items_preserve_order_and_replay() {
+        let first = reasoning();
+        let mut second = reasoning();
+        second["id"] = json!("rs_second");
+        second["encrypted_content"] = json!("opaque-second");
+        second["summary"] = json!([{"type":"summary_text","text":"summary"}]);
+        let signature = json!([first, second]);
+        for compatibility in [false, true] {
+            for (text, tool) in [(true, false), (false, true), (true, true)] {
+                if text && tool && !compatibility {
+                    continue;
+                }
+                let mut t = translator();
+                t.compatibility = compatibility;
+                let mut events = t.created_events();
+                if text {
+                    t.push(ChatResponse {
+                        delta_text: "answer".into(),
+                        ..Default::default()
+                    })
+                    .unwrap();
+                }
+                if tool {
+                    t.push(call(true)).unwrap();
+                }
+                let encoded = signature.to_string();
+                for chunk in encoded.as_bytes().chunks(17) {
+                    t.push(ChatResponse {
+                        delta_signature: String::from_utf8(chunk.to_vec()).unwrap(),
+                        delta_signature_type: "openai".into(),
+                        ..Default::default()
+                    })
+                    .unwrap();
+                }
+                events.extend(t.finish().unwrap());
+                for (index, event) in events.iter().enumerate() {
+                    assert_eq!(event["sequence_number"], index);
+                }
+                let output = events.last().unwrap()["response"]["output"]
+                    .as_array()
+                    .unwrap();
+                assert_eq!(output.len(), 2 + usize::from(text) + usize::from(tool));
+                assert_eq!(&output[..2], signature.as_array().unwrap());
+                let done: Vec<_> = events
+                    .iter()
+                    .filter(|event| event["type"] == "response.output_item.done")
+                    .collect();
+                for (index, event) in done.iter().enumerate() {
+                    assert_eq!(event["output_index"], index);
+                    assert_eq!(event["item"], output[index]);
+                }
+                assert_eq!(done.len(), output.len());
+                let mut input = output.clone();
+                if tool {
+                    input.push(
+                        json!({"type":"custom_tool_call_output","call_id":"a","output":"ok"}),
+                    );
+                }
+                input.push(json!({"role":"user","content":"continue"}));
+                let mut replay = json!({"model":"gpt-6-astra","input":input});
+                if compatibility {
+                    replay = crate::compat::Compatibility::prepare(&replay).unwrap().0;
+                }
+                let credentials = crate::config::Credentials {
+                    api_key: "test-key".into(),
+                    endpoint: "https://example.com/rpc".into(),
+                    device_id: "test-device".into(),
+                    client_version: "test".into(),
+                };
+                let translated = crate::request::translate_request(&replay, &credentials).unwrap();
+                assert_eq!(
+                    serde_json::from_str::<Value>(&translated.request.messages[0].reasoning)
+                        .unwrap(),
+                    signature
+                );
+                assert_eq!(translated.request.messages[0].reasoning_type, "openai");
+                assert!(
+                    translated.request.messages[1..]
+                        .iter()
+                        .all(|message| message.reasoning.is_empty())
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn reasoning_signature_rejects_empty_invalid_duplicate_and_oversized_arrays() {
+        let mut invalid = reasoning();
+        invalid["encrypted_content"] = json!("");
+        for (signature, expected) in [
+            (json!([]), "Empty reasoning signature cannot be replayed"),
+            (
+                json!([reasoning(), invalid]),
+                "Invalid replayable reasoning identity",
+            ),
+            (
+                json!([reasoning(), reasoning()]),
+                "Gateway reused an output item ID",
+            ),
+            (
+                json!(vec![reasoning(); MAX_ITEMS]),
+                "Gateway response exceeds output item limit",
+            ),
+        ] {
+            let mut t = translator();
+            t.compatibility = true;
+            t.push(ChatResponse {
+                delta_signature: signature.to_string(),
+                delta_signature_type: "openai".into(),
+                delta_text: "PRIVATE".into(),
+                ..Default::default()
+            })
+            .unwrap();
+            assert_eq!(t.finish().unwrap_err().0, expected);
+            let failure = t.failed_event("response_translation_error", expected);
+            assert_eq!(failure["response"]["output"], json!([]));
+            assert!(!failure.to_string().contains("PRIVATE"));
+            assert!(t.finish().is_err());
+        }
     }
 
     #[test]
