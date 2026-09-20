@@ -147,7 +147,7 @@ Input audit rejects unknown semantics before inference. Checked Connect terminat
 
 Live Rust checks completed a flat custom-tool/result exchange and a text/reasoning replay. An actual stock Codex request reached the adapter and received the intended 422 rejection. Codex retried five times before displaying that error; that strict-mode run did not attempt compatibility translation.
 
-Output is buffered until checked completion because the gateway can send its response-scoped signature after answer text. The adapter puts that signature before its one associated assistant item for replay. SSE lifecycle/keepalive events can arrive earlier, but tokens do not stream live. Multi-item reasoning attachment is restricted pending a dedicated probe.
+Output is buffered until checked completion because the gateway can send its response-scoped signature after answer text. The adapter preserves all validated reasoning items in that signature and places them before the associated assistant turn for replay. SSE lifecycle/keepalive events can arrive earlier, but tokens do not stream live. Strict mode still restricts attachment to a single assistant output item; Codex compatibility mode permits a turn containing commentary and a tool call.
 
 Sampling defaults follow the inspected Devin client; equivalence to OpenAI defaults is unproven. Cache counters have no established overlap rule, so nonzero cache activity leaves standard token totals unavailable. Raw counters and ACU costs are in `x_devin_usage`. Expired auth requires Devin login and adapter restart.
 

@@ -1,5 +1,7 @@
 use clap::{Parser, Subcommand};
-use devin_codex::{config, gateway::GatewayClient, request::audit_request, server, session, smoke};
+use devin_codex::{
+    Mode, config, gateway::GatewayClient, request::audit_request, server, session, smoke,
+};
 use std::{
     ffi::OsString,
     io::Read,
@@ -114,36 +116,44 @@ async fn run(cli: Cli) -> Result<u8, &'static str> {
             println!("Serving on http://127.0.0.1:{port}/v1 (compatibility={compatibility}).");
             axum::serve(
                 listener,
-                server::router_with_mode(credentials, token, gateway, compatibility),
+                server::router_with_mode(
+                    credentials,
+                    token,
+                    gateway,
+                    if compatibility {
+                        Mode::Codex
+                    } else {
+                        Mode::Strict
+                    },
+                ),
             )
             .with_graceful_shutdown(session::shutdown())
             .await
             .map_err(|_| "HTTP server failed.")?;
             Ok(0)
         }
-        command => {
-            let credentials = config::load_credentials(cli.credentials.as_deref())
-                .map_err(|_| "Cannot read Devin credentials. Sign in with Devin first.")?;
-            let session = session::Session::start_with_mode(
-                credentials,
-                matches!(command, Command::Run { .. }),
-            )
-            .await?;
-            match command {
-                Command::Test => {
-                    smoke::run(&session).await.map_err(
-                        |_| "Live test failed. Check Devin access and the gateway protocol.",
-                    )?;
-                    Ok(0)
-                }
-                Command::Run { codex, args } => {
-                    eprintln!(
-                        "Devin compatibility mode: translated instructions/tools; web and image generation unavailable."
-                    );
-                    session.run(&codex, &args).await
-                }
-                _ => unreachable!(),
-            }
+        Command::Test => {
+            let session = start_session(cli.credentials.as_deref(), Mode::Strict).await?;
+            smoke::run(&session)
+                .await
+                .map_err(|_| "Live test failed. Check Devin access and the gateway protocol.")?;
+            Ok(0)
+        }
+        Command::Run { codex, args } => {
+            let session = start_session(cli.credentials.as_deref(), Mode::Codex).await?;
+            eprintln!(
+                "Devin compatibility mode: translated instructions/tools; web and image generation unavailable."
+            );
+            session.run(&codex, &args).await
         }
     }
+}
+
+async fn start_session(
+    path: Option<&std::path::Path>,
+    mode: Mode,
+) -> Result<session::Session, &'static str> {
+    let credentials = config::load_credentials(path)
+        .map_err(|_| "Cannot read Devin credentials. Sign in with Devin first.")?;
+    session::Session::start_with_mode(credentials, mode).await
 }
