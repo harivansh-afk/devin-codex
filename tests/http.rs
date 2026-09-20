@@ -27,6 +27,13 @@ async fn app() -> (Router, Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
 async fn app_with_mode(
     compatibility: bool,
 ) -> (Router, Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
+    app_with_signature(compatibility, None).await
+}
+
+async fn app_with_signature(
+    compatibility: bool,
+    signature: Option<String>,
+) -> (Router, Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
     let calls = Arc::new(AtomicUsize::new(0));
     let counter = calls.clone();
     let upstream = Router::new().route(
@@ -34,6 +41,7 @@ async fn app_with_mode(
         post(
             move |headers: axum::http::HeaderMap, body: axum::body::Bytes| {
                 let calls = counter.clone();
+                let signature = signature.clone();
                 async move {
                     calls.fetch_add(1, Ordering::SeqCst);
                     assert_eq!(
@@ -49,6 +57,19 @@ async fn app_with_mode(
                         actual_model_uid: request.model.clone(),
                         ..Default::default()
                     };
+                    if let Some(signature) = signature {
+                        for message in &request.messages {
+                            if !message.reasoning.is_empty() {
+                                assert_eq!(
+                                    serde_json::from_str::<Value>(&message.reasoning).unwrap(),
+                                    serde_json::from_str::<Value>(&signature).unwrap()
+                                );
+                                assert_eq!(message.reasoning_type, "openai");
+                            }
+                        }
+                        response.delta_signature = signature;
+                        response.delta_signature_type = "openai".into();
+                    }
                     if let Some(tool) = request.tools.first() {
                         assert_eq!(tool.name, "collaboration__spawn_agent");
                         let schema: Value = serde_json::from_str(&tool.parameters_json).unwrap();
@@ -160,6 +181,96 @@ async fn authenticated_json_and_compressed_sse_roundtrip() {
     assert!(!text.contains("response.failed"));
     assert_eq!(calls.load(Ordering::SeqCst), 2);
     task.abort();
+}
+
+#[tokio::test]
+async fn multiple_reasoning_items_sse_and_history_roundtrip() {
+    let signature = json!([
+        {"type":"reasoning","id":"rs_first","summary":[],"encrypted_content":"opaque-first"},
+        {"type":"reasoning","id":"rs_second","summary":[],"encrypted_content":"opaque-second"}
+    ]);
+    for compatibility in [false, true] {
+        let (app, calls, task) =
+            app_with_signature(compatibility, Some(signature.to_string())).await;
+        let response = app
+            .clone()
+            .oneshot(request(
+                json!({"model":"gpt-6-astra","input":"hello","stream":true}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), 65536).await.unwrap();
+        let text = String::from_utf8(bytes.to_vec()).unwrap();
+        let events: Vec<Value> = text
+            .lines()
+            .filter_map(|line| line.strip_prefix("data: "))
+            .map(|data| serde_json::from_str(data).unwrap())
+            .collect();
+        assert_eq!(events.last().unwrap()["type"], "response.completed");
+        let mut input = events.last().unwrap()["response"]["output"]
+            .as_array()
+            .unwrap()
+            .clone();
+        assert_eq!(&input[..2], signature.as_array().unwrap());
+        input.push(json!({"role":"user","content":"continue"}));
+        let response = app
+            .oneshot(request(json!({"model":"gpt-6-astra","input":input})))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 65536).await.unwrap()).unwrap();
+        assert_eq!(body["status"], "completed");
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        task.abort();
+    }
+}
+
+#[tokio::test]
+async fn reasoning_signature_failures_have_safe_shape_diagnostics() {
+    for (signature, reason, shape) in [
+        (
+            json!([]),
+            "Empty reasoning signature cannot be replayed",
+            "signature_items=0, reasoning_items=0, other_items=0",
+        ),
+        (
+            json!([
+                {"type":"reasoning","id":"rs_first","encrypted_content":"PRIVATE"},
+                {"type":"PRIVATE","id":"PRIVATE","encrypted_content":"PRIVATE"}
+            ]),
+            "Invalid replayable reasoning identity",
+            "signature_items=2, reasoning_items=1, other_items=1",
+        ),
+    ] {
+        let (app, _, task) = app_with_signature(true, Some(signature.to_string())).await;
+        for streaming in [true, false] {
+            let response = app
+                .clone()
+                .oneshot(request(
+                    json!({"model":"gpt-6-astra","input":"hello","stream":streaming}),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                if streaming {
+                    StatusCode::OK
+                } else {
+                    StatusCode::BAD_GATEWAY
+                }
+            );
+            let bytes = to_bytes(response.into_body(), 65536).await.unwrap();
+            let text = String::from_utf8(bytes.to_vec()).unwrap();
+            assert!(text.contains(reason));
+            assert!(text.contains(shape));
+            assert!(!text.contains("PRIVATE"));
+            assert!(!text.contains("hello"));
+            assert!(!text.contains("response.output_item.done"));
+        }
+        task.abort();
+    }
 }
 
 #[tokio::test]
