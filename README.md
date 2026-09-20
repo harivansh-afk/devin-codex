@@ -82,6 +82,31 @@ completed tool calls may already have changed files or external state.
 
 ## Development
 
+The adapter has three boundaries: local HTTP, protocol translation, and the Devin
+gateway. `Mode::Strict` validates the supported Responses subset; `Mode::Codex`
+normalizes Codex requests before passing them through the same validation.
+
+| Module | Responsibility |
+| --- | --- |
+| `server.rs` | Local authentication, body decoding, and JSON/SSE delivery |
+| `adapter.rs` | Request preparation and the gateway-to-Responses event pipeline |
+| `compat/` | Codex normalization and reversible tool-name mapping |
+| `request/` | Request options, tool definitions, and history validation/encoding |
+| `responses/` | Buffered output validation, signed reasoning, and event serialization |
+| `tools.rs` | Shared function/custom-tool wire identities |
+| `gateway/` | Upstream HTTP transport and bounded Connect framing |
+| `session/` | Listener/process lifetime and the temporary Codex model catalog |
+| `config.rs`, `proto.rs` | Private credentials and the gateway wire schema |
+
+Keep protocol decisions in their owning module. Unknown semantics must be rejected
+before inference; completed tool events must wait for validated gateway termination.
+Compatibility transformations remain explicit so new support does not accidentally
+weaken strict validation.
+
+All test bodies live under `tests/`. `tests/unit/` contains private-module tests,
+linked with `#[cfg(test)]` rather than making internals public for testing.
+The top-level HTTP and launcher tests exercise the public boundaries.
+
 ```sh
 nix develop
 cargo test --locked

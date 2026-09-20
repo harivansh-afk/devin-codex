@@ -5,6 +5,7 @@ use axum::{
     routing::post,
 };
 use devin_codex::{
+    Mode,
     config::Credentials,
     gateway::GatewayClient,
     proto::{ChatRequest, ChatResponse, ToolCall},
@@ -116,7 +117,16 @@ async fn app_with_signature(
     };
     let gateway = GatewayClient::new(&endpoint, &credentials.api_key).unwrap();
     (
-        server::router_with_mode(credentials, TOKEN.into(), gateway, compatibility),
+        server::router_with_mode(
+            credentials,
+            TOKEN.into(),
+            gateway,
+            if compatibility {
+                Mode::Codex
+            } else {
+                Mode::Strict
+            },
+        ),
         calls,
         task,
     )
