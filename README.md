@@ -24,6 +24,14 @@ devin-codex run -- --no-alt-screen
 selects a Devin credentials file. The flake packages the adapter; Codex must be
 on PATH. Flake consumers can use `inputs.devin-codex.packages.${system}.default`.
 
+Use `run --reasoning-effort low|medium|high|xhigh|max` to override reasoning for one
+session, and `--trust-project PATH` to trust that project for the session. Neither
+option rewrites the saved profile. Codex arguments still go after `--`:
+
+```sh
+devin-codex run --reasoning-effort medium --trust-project "$PWD" -- resume --last
+```
+
 ## What changes
 
 The launcher starts an authenticated loopback adapter and a child Codex process.
