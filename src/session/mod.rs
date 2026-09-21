@@ -5,7 +5,10 @@ use crate::{
     gateway::GatewayClient,
     server,
 };
-use std::{ffi::OsString, path::Path};
+use std::{
+    ffi::OsString,
+    path::{Path, PathBuf},
+};
 use tokio::{net::TcpListener, process::Command, sync::oneshot};
 
 mod catalog;
@@ -14,6 +17,16 @@ use catalog::Catalog;
 #[cfg(test)]
 #[path = "../../tests/unit/session.rs"]
 mod tests;
+
+#[derive(clap::Args, Default)]
+pub struct RunOptions {
+    /// Override reasoning effort for this session without changing the saved profile.
+    #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(crate::compat::EFFORTS.iter().copied()))]
+    pub reasoning_effort: Option<String>,
+    /// Trust this project directory for this session.
+    #[arg(long)]
+    pub trust_project: Option<PathBuf>,
+}
 
 #[cfg(unix)]
 struct ProcessGroup(nix::unistd::Pid);
@@ -75,9 +88,14 @@ impl Session {
         })
     }
 
-    pub async fn run(&self, binary: &Path, args: &[OsString]) -> Result<u8, &'static str> {
+    pub async fn run(
+        &self,
+        binary: &Path,
+        args: &[OsString],
+        options: &RunOptions,
+    ) -> Result<u8, &'static str> {
         let catalog = Catalog::load(binary).await?;
-        let mut command = self.command(binary, args, Some(catalog.path()))?;
+        let mut command = self.command(binary, args, Some(catalog.path()), options)?;
         let detached = args.first().is_some_and(|a| a == "exec");
         #[cfg(unix)]
         if detached {
@@ -124,6 +142,7 @@ impl Session {
         binary: &Path,
         args: &[OsString],
         catalog: Option<&Path>,
+        options: &RunOptions,
     ) -> Result<Command, &'static str> {
         // Keep routing under this launcher's control. No shell interprets arguments.
         for arg in args {
@@ -166,6 +185,27 @@ impl Session {
         if let Some(path) = catalog {
             command.arg("-c").arg(format!(
                 "model_catalog_json={}",
+                toml::Value::String(path.to_string_lossy().into_owned())
+            ));
+        }
+        if let Some(effort) = &options.reasoning_effort {
+            if !crate::compat::EFFORTS.contains(&effort.as_str()) {
+                return Err("Unsupported reasoning effort.");
+            }
+            command.arg("-c").arg(format!(
+                "model_reasoning_effort={}",
+                toml::Value::String(effort.clone())
+            ));
+        }
+        if let Some(path) = &options.trust_project {
+            let path = path
+                .canonicalize()
+                .map_err(|_| "Cannot resolve trusted project directory.")?;
+            if !path.is_dir() {
+                return Err("Trusted project must be a directory.");
+            }
+            command.arg("-c").arg(format!(
+                "projects={{{}={{trust_level=\"trusted\"}}}}",
                 toml::Value::String(path.to_string_lossy().into_owned())
             ));
         }

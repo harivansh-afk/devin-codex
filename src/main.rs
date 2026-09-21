@@ -44,6 +44,8 @@ enum Command {
     Run {
         #[arg(long, default_value = "codex")]
         codex: PathBuf,
+        #[command(flatten)]
+        options: session::RunOptions,
         #[arg(last = true)]
         args: Vec<OsString>,
     },
@@ -63,6 +65,7 @@ async fn main() -> ExitCode {
 async fn run(cli: Cli) -> Result<u8, &'static str> {
     match cli.command.unwrap_or(Command::Run {
         codex: PathBuf::from("codex"),
+        options: session::RunOptions::default(),
         args: Vec::new(),
     }) {
         Command::Token { path } => {
@@ -139,12 +142,16 @@ async fn run(cli: Cli) -> Result<u8, &'static str> {
                 .map_err(|_| "Live test failed. Check Devin access and the gateway protocol.")?;
             Ok(0)
         }
-        Command::Run { codex, args } => {
+        Command::Run {
+            codex,
+            args,
+            options,
+        } => {
             let session = start_session(cli.credentials.as_deref(), Mode::Codex).await?;
             eprintln!(
                 "Devin compatibility mode: translated instructions/tools; web and image generation unavailable."
             );
-            session.run(&codex, &args).await
+            session.run(&codex, &args, &options).await
         }
     }
 }
