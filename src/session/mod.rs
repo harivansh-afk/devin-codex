@@ -24,7 +24,7 @@ pub struct RunOptions {
     /// Devin CLI used to list models for this account.
     #[arg(long, default_value = "devin")]
     pub devin: PathBuf,
-    /// Select an exact Devin model UID (or its devin-prefixed catalog alias).
+    /// Select one of the curated Devin model families (or its catalog alias).
     #[arg(long)]
     pub model: Option<String>,
     /// Override reasoning effort for this session without changing the saved profile.
@@ -199,31 +199,29 @@ impl Session {
         }
         let mut command = Command::new(binary);
         command.args(["--profile", "devin-codex"]);
-        let default_model =
-            if self.models.entries().is_empty() || self.models.contains_uid("gpt-6-astra-medium") {
-                crate::compat::MODEL
-            } else {
-                &self.models.entries()[0].alias
-            };
+        let default_model = if self.models.entries().is_empty()
+            || self.models.model(crate::compat::MODEL).is_some()
+        {
+            crate::compat::MODEL
+        } else {
+            &self.models.entries()[0].alias
+        };
         let selected_model = match options.model.as_deref() {
             None => default_model,
-            Some(model)
-                if model == crate::compat::MODEL
-                    && (self.models.entries().is_empty()
-                        || self.models.contains_uid("gpt-6-astra-medium")) =>
-            {
+            Some(model) if model == crate::compat::MODEL && self.models.entries().is_empty() => {
                 model
             }
             Some(model) => self
                 .models
-                .entries()
-                .iter()
-                .find(|entry| entry.uid == model || entry.alias == model)
+                .model(model)
                 .map(|entry| entry.alias.as_str())
-                .ok_or("Model is not in your Devin catalog.")?,
+                .ok_or("Model is not in the selected Devin catalog.")?,
         };
-        if selected_model != crate::compat::MODEL && options.reasoning_effort.is_some() {
-            return Err("Reasoning effort is encoded in the selected Devin variant.");
+        let selected = self.models.model(selected_model);
+        if let Some(effort) = options.reasoning_effort.as_deref()
+            && selected.is_some_and(|model| !model.variants.contains_key(effort))
+        {
+            return Err("Reasoning effort is unavailable for the selected Devin model.");
         }
         for setting in [
             "model_provider=\"devin\"".to_owned(),
@@ -250,6 +248,11 @@ impl Session {
             command.arg("-c").arg(format!(
                 "model_reasoning_effort={}",
                 toml::Value::String(effort.clone())
+            ));
+        } else if selected.is_some_and(|model| model.variants.len() == 1) {
+            command.arg("-c").arg(format!(
+                "model_reasoning_effort={}",
+                toml::Value::String(selected.unwrap().default_effort().into())
             ));
         }
         if let Some(path) = &options.trust_project {

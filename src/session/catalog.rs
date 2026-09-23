@@ -61,20 +61,26 @@ impl Catalog {
         model["upgrade"] = Value::Null;
         let template = model.clone();
         models.clear();
-        if available.entries().is_empty() || available.contains_uid("gpt-6-astra-medium") {
+        if available.entries().is_empty() {
             models.push(model);
         }
-        for entry in available.entries() {
+        for (index, entry) in available.entries().iter().enumerate() {
             let mut variant = template.clone();
             variant["slug"] = json!(entry.alias);
             variant["display_name"] = json!(entry.label);
-            variant["description"] = json!(format!("{} via Devin inference.", entry.uid));
+            variant["description"] =
+                json!("Devin inference through the Codex compatibility adapter.");
             variant["context_window"] = json!(entry.context);
-            variant["default_reasoning_level"] = json!("medium");
-            variant["supported_reasoning_levels"] = json!([{
-                "effort":"medium", "description":"Reasoning is selected by the Devin model variant"
-            }]);
-            variant["priority"] = json!(100);
+            variant["default_reasoning_level"] = json!(entry.default_effort());
+            variant["supported_reasoning_levels"]
+                .as_array_mut()
+                .unwrap()
+                .retain(|level| {
+                    level["effort"]
+                        .as_str()
+                        .is_some_and(|effort| entry.variants.contains_key(effort))
+                });
+            variant["priority"] = json!(index + 1);
             models.push(variant);
         }
         Ok(())

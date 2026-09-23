@@ -56,7 +56,14 @@ pub fn translate_with_models(
         .get("reasoning")
         .and_then(|r| r.get("effort"))
         .and_then(Value::as_str)
-        .unwrap_or("medium");
+        .unwrap_or_else(|| {
+            models
+                .by_slug(text(&body["model"]))
+                .map_or("medium", |m| m.default_effort())
+        });
+    let selected = models
+        .by_slug(text(&body["model"]))
+        .and_then(|model| model.variants.get(effort));
     let mode = body["tool_choice"].as_str().unwrap_or("auto");
     let request = proto::ChatRequest {
         metadata: Some(metadata(credentials)),
@@ -69,7 +76,7 @@ pub fn translate_with_models(
                 .get("max_output_tokens")
                 .and_then(Value::as_u64)
                 .unwrap_or(128000)
-                .min(models.max_output(text(&body["model"])).unwrap_or(128000)),
+                .min(selected.map_or(128000, |variant| variant.output)),
             max_newlines: 400,
             temperature: body
                 .get("temperature")
@@ -91,11 +98,9 @@ pub fn translate_with_models(
         }),
         cascade_id: Uuid::new_v4().to_string(),
         planner_mode: 1,
-        model: if body["model"] == "gpt-6-astra" {
-            format!("gpt-6-astra-{effort}")
-        } else {
-            text(&body["model"]).into()
-        },
+        model: selected
+            .map(|variant| variant.uid.clone())
+            .unwrap_or_else(|| format!("gpt-6-astra-{effort}")),
     };
     Ok(Translation {
         request,

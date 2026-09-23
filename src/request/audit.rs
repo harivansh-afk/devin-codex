@@ -83,12 +83,12 @@ pub(super) fn audit_with_models(body: &Value, models: &Models) -> Vec<Problem> {
     );
     if !body["model"]
         .as_str()
-        .is_some_and(|model| model == "gpt-6-astra" || models.contains_uid(model))
+        .is_some_and(|model| model == "gpt-6-astra" || models.by_slug(model).is_some())
     {
         bad(
             &mut out,
             "model",
-            "Model is not in the available Devin catalog.",
+            "Model is not in the selected Devin catalog.",
         );
     }
     if obj.get("store").is_some_and(|v| v != &Value::Bool(false)) {
@@ -117,10 +117,15 @@ pub(super) fn audit_with_models(body: &Value, models: &Models) -> Vec<Problem> {
         if let Some(reasoning) = reasoning.as_object() {
             unknown(&mut out, reasoning, &["effort"], "reasoning");
             if reasoning.contains_key("effort")
-                && !str_is(
-                    reasoning.get("effort"),
-                    &["low", "medium", "high", "xhigh", "max"],
-                )
+                && !reasoning["effort"].as_str().is_some_and(|effort| {
+                    if let Some(model) =
+                        body["model"].as_str().and_then(|slug| models.by_slug(slug))
+                    {
+                        model.variants.contains_key(effort)
+                    } else {
+                        crate::compat::EFFORTS.contains(&effort)
+                    }
+                })
             {
                 bad(
                     &mut out,
