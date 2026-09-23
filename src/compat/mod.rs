@@ -1,4 +1,5 @@
 //! Explicitly lossy Codex normalization before strict request validation.
+use crate::models::Models;
 use crate::request::Problem;
 use serde_json::{Map, Value, json};
 
@@ -15,7 +16,7 @@ pub const EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
 #[derive(Default)]
 pub struct Compatibility {
     tools: ToolNames,
-    model_alias: bool,
+    model_alias: Option<String>,
 }
 
 fn problem(reason: &str) -> Vec<Problem> {
@@ -56,17 +57,28 @@ fn close_reasoning_turn(input: &mut Vec<Value>) {
 
 impl Compatibility {
     pub fn prepare(body: &Value) -> Result<(Value, Self), Vec<Problem>> {
+        Self::prepare_with_models(body, &Models::default())
+    }
+
+    pub fn prepare_with_models(
+        body: &Value,
+        models: &Models,
+    ) -> Result<(Value, Self), Vec<Problem>> {
         let mut body = body.clone();
         let obj = body
             .as_object_mut()
             .ok_or_else(|| problem("Expected request object."))?;
         prepare_options(obj)?;
-        let mut this = Self {
-            model_alias: obj.get("model").and_then(Value::as_str) == Some(MODEL),
-            ..Self::default()
+        let alias = obj.get("model").and_then(Value::as_str).unwrap_or_default();
+        let uid = if alias == MODEL {
+            Some("gpt-6-astra")
+        } else {
+            models.uid(alias)
         };
-        if this.model_alias {
-            obj.insert("model".into(), json!("gpt-6-astra"));
+        let mut this = Self::default();
+        if let Some(uid) = uid {
+            this.model_alias = Some(alias.into());
+            obj.insert("model".into(), json!(uid));
         }
         let mut definitions = Vec::new();
         if let Some(tools) = obj.get("tools") {
@@ -138,10 +150,10 @@ impl Compatibility {
     }
 
     pub fn restore(&self, event: &mut Value) {
-        if self.model_alias
+        if let Some(alias) = &self.model_alias
             && let Some(response) = event.get_mut("response").and_then(Value::as_object_mut)
         {
-            response.insert("model".into(), json!(MODEL));
+            response.insert("model".into(), json!(alias));
         }
         if let Some(item) = event.get_mut("item") {
             self.tools.restore_call(item);

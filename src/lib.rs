@@ -2,6 +2,7 @@ mod adapter;
 pub mod compat;
 pub mod config;
 pub mod gateway;
+pub mod models;
 pub mod proto;
 pub mod request;
 pub mod responses;

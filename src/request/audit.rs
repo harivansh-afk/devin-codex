@@ -1,4 +1,5 @@
 use super::{Problem, history, tools};
+use crate::models::Models;
 use serde_json::{Map, Value, json};
 
 pub(super) fn bad(out: &mut Vec<Problem>, path: impl Into<String>, reason: &str) {
@@ -51,6 +52,10 @@ pub(super) fn nonempty(value: Option<&Value>) -> bool {
 }
 
 pub fn audit_request(body: &Value) -> Vec<Problem> {
+    audit_with_models(body, &Models::default())
+}
+
+pub(super) fn audit_with_models(body: &Value, models: &Models) -> Vec<Problem> {
     let mut out = Vec::new();
     let Some(obj) = body.as_object() else {
         bad(&mut out, "$", "Expected a JSON object.");
@@ -76,11 +81,14 @@ pub fn audit_request(body: &Value) -> Vec<Problem> {
         ],
         "",
     );
-    if body["model"].as_str() != Some("gpt-6-astra") {
+    if !body["model"]
+        .as_str()
+        .is_some_and(|model| model == "gpt-6-astra" || models.contains_uid(model))
+    {
         bad(
             &mut out,
             "model",
-            "This release verifies only Codex-facing gpt-6-astra.",
+            "Model is not in the available Devin catalog.",
         );
     }
     if obj.get("store").is_some_and(|v| v != &Value::Bool(false)) {

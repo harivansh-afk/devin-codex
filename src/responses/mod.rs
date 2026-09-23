@@ -97,7 +97,8 @@ impl Translator {
             return Err(Error("Gateway redacted the response"));
         }
         if !frame.actual_model_uid.is_empty() {
-            if frame.actual_model_uid != self.response.model
+            if self.response.model == "gpt-6-astra"
+                && frame.actual_model_uid != self.response.model
                 && !frame
                     .actual_model_uid
                     .starts_with(&format!("{}-", self.response.model))

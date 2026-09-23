@@ -3,8 +3,9 @@ use crate::{
     compat::Compatibility,
     config::Credentials,
     gateway::GatewayClient,
+    models::Models,
     proto::ChatRequest,
-    request::{Problem, translate_request},
+    request::{Problem, translate_with_models},
     responses::Translator,
 };
 use futures_util::{StreamExt, stream::BoxStream};
@@ -14,6 +15,7 @@ pub(crate) struct Adapter {
     credentials: Credentials,
     gateway: GatewayClient,
     pub mode: Mode,
+    models: Models,
 }
 
 pub(crate) struct PreparedRequest {
@@ -24,11 +26,17 @@ pub(crate) struct PreparedRequest {
 }
 
 impl Adapter {
-    pub fn new(credentials: Credentials, gateway: GatewayClient, mode: Mode) -> Self {
+    pub fn with_models(
+        credentials: Credentials,
+        gateway: GatewayClient,
+        mode: Mode,
+        models: Models,
+    ) -> Self {
         Self {
             credentials,
             gateway,
             mode,
+            models,
         }
     }
 
@@ -36,9 +44,9 @@ impl Adapter {
         let streaming = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
         let (body, mapping) = match self.mode {
             Mode::Strict => (body, Compatibility::default()),
-            Mode::Codex => Compatibility::prepare(&body)?,
+            Mode::Codex => Compatibility::prepare_with_models(&body, &self.models)?,
         };
-        let translated = translate_request(&body, &self.credentials)?;
+        let translated = translate_with_models(&body, &self.credentials, &self.models)?;
         Ok(PreparedRequest {
             request: translated.request,
             translator: Translator::new(

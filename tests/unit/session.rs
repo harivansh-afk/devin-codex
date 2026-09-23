@@ -10,6 +10,58 @@ fn credentials() -> Credentials {
 }
 
 #[tokio::test]
+async fn launch_defaults_to_an_available_model_without_astra() {
+    let models = Models::parse(&serde_json::json!({"families":[{"variants":[
+        {"model_uid":"claude-opus-5-5-high","label":"Claude Opus High"}
+    ]}]}))
+    .unwrap();
+    let session = Session::start_with_models(credentials(), Mode::Codex, models)
+        .await
+        .unwrap();
+    let command = session
+        .command(Path::new("codex"), &[], None, &RunOptions::default())
+        .unwrap();
+    let args: Vec<_> = command.as_std().get_args().collect();
+    assert!(args.contains(&std::ffi::OsStr::new(
+        "model=\"devin-claude-opus-5-5-high\""
+    )));
+    assert_eq!(RunOptions::default().devin, Path::new("devin"));
+    for model in ["claude-opus-5-5-high", "devin-claude-opus-5-5-high"] {
+        let options = RunOptions {
+            model: Some(model.into()),
+            ..Default::default()
+        };
+        assert!(
+            session
+                .command(Path::new("codex"), &[], None, &options)
+                .unwrap()
+                .as_std()
+                .get_args()
+                .any(|arg| arg == "model=\"devin-claude-opus-5-5-high\"")
+        );
+    }
+    let options = RunOptions {
+        model: Some("unknown".into()),
+        ..Default::default()
+    };
+    assert!(
+        session
+            .command(Path::new("codex"), &[], None, &options)
+            .is_err()
+    );
+    let options = RunOptions {
+        model: Some("claude-opus-5-5-high".into()),
+        reasoning_effort: Some("low".into()),
+        ..Default::default()
+    };
+    assert!(
+        session
+            .command(Path::new("codex"), &[], None, &options)
+            .is_err()
+    );
+}
+
+#[tokio::test]
 async fn private_listener_and_command_lifecycle() {
     let session = Session::start(credentials()).await.unwrap();
     let client = reqwest::Client::builder()

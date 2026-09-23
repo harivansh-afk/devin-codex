@@ -1,6 +1,7 @@
 use crate::{
     compat::{EFFORTS, MODEL},
     config::random_token,
+    models::Models,
 };
 use serde_json::{Value, json};
 use std::{
@@ -16,14 +17,15 @@ mod tests;
 pub(super) struct Catalog(PathBuf);
 
 impl Catalog {
-    fn prepare(value: &mut Value) -> Result<(), &'static str> {
+    fn prepare(value: &mut Value, available: &Models) -> Result<(), &'static str> {
         let models = value
             .get_mut("models")
             .and_then(Value::as_array_mut)
             .ok_or("Cannot read Codex model catalog.")?;
-        models.retain(|m| m["slug"] == "gpt-6-astra");
-        let model = models
-            .first_mut()
+        let mut model = models
+            .iter()
+            .find(|m| m["slug"] == "gpt-6-astra")
+            .cloned()
             .ok_or("Installed Codex does not provide the gpt-6-astra model catalog.")?;
         model["slug"] = json!(MODEL);
         model["display_name"] = json!("GPT-6 Astra (Devin)");
@@ -57,10 +59,28 @@ impl Catalog {
         model["supports_image_detail_original"] = json!(false);
         model["supports_search_tool"] = json!(false);
         model["upgrade"] = Value::Null;
+        let template = model.clone();
+        models.clear();
+        if available.entries().is_empty() || available.contains_uid("gpt-6-astra-medium") {
+            models.push(model);
+        }
+        for entry in available.entries() {
+            let mut variant = template.clone();
+            variant["slug"] = json!(entry.alias);
+            variant["display_name"] = json!(entry.label);
+            variant["description"] = json!(format!("{} via Devin inference.", entry.uid));
+            variant["context_window"] = json!(entry.context);
+            variant["default_reasoning_level"] = json!("medium");
+            variant["supported_reasoning_levels"] = json!([{
+                "effort":"medium", "description":"Reasoning is selected by the Devin model variant"
+            }]);
+            variant["priority"] = json!(100);
+            models.push(variant);
+        }
         Ok(())
     }
 
-    pub async fn load(binary: &Path) -> Result<Self, &'static str> {
+    pub async fn load(binary: &Path, available: &Models) -> Result<Self, &'static str> {
         let output = tokio::time::timeout(
             std::time::Duration::from_secs(10),
             Command::new(binary)
@@ -77,7 +97,7 @@ impl Catalog {
         if !output.status.success() {
             return Err("Cannot read Codex model catalog.");
         }
-        Self::prepare(&mut value)?;
+        Self::prepare(&mut value, available)?;
         let bytes = serde_json::to_vec(&value).map_err(|_| "Cannot encode model catalog.")?;
         let path = std::env::temp_dir().join(format!("devin-codex-models-{}.json", random_token()));
         let mut options = std::fs::OpenOptions::new();

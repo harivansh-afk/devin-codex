@@ -1,4 +1,4 @@
-use crate::{config::Credentials, proto, tools::ToolKind};
+use crate::{config::Credentials, models::Models, proto, tools::ToolKind};
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -39,7 +39,15 @@ pub fn translate_request(
     body: &Value,
     credentials: &Credentials,
 ) -> Result<Translation, Vec<Problem>> {
-    let problems = audit_request(body);
+    translate_with_models(body, credentials, &Models::default())
+}
+
+pub fn translate_with_models(
+    body: &Value,
+    credentials: &Credentials,
+    models: &Models,
+) -> Result<Translation, Vec<Problem>> {
+    let problems = audit::audit_with_models(body, models);
     if !problems.is_empty() {
         return Err(problems);
     }
@@ -60,7 +68,8 @@ pub fn translate_request(
             max_tokens: body
                 .get("max_output_tokens")
                 .and_then(Value::as_u64)
-                .unwrap_or(128000),
+                .unwrap_or(128000)
+                .min(models.max_output(text(&body["model"])).unwrap_or(128000)),
             max_newlines: 400,
             temperature: body
                 .get("temperature")
@@ -82,11 +91,15 @@ pub fn translate_request(
         }),
         cascade_id: Uuid::new_v4().to_string(),
         planner_mode: 1,
-        model: format!("gpt-6-astra-{effort}"),
+        model: if body["model"] == "gpt-6-astra" {
+            format!("gpt-6-astra-{effort}")
+        } else {
+            text(&body["model"]).into()
+        },
     };
     Ok(Translation {
         request,
-        model: "gpt-6-astra".into(),
+        model: text(&body["model"]).into(),
         allow_tools: mode != "none",
         tool_map,
     })

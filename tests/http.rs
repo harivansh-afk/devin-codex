@@ -8,6 +8,7 @@ use devin_codex::{
     Mode,
     config::Credentials,
     gateway::GatewayClient,
+    models::Models,
     proto::{ChatRequest, ChatResponse, ToolCall},
     server,
 };
@@ -34,6 +35,14 @@ async fn app_with_mode(
 async fn app_with_signature(
     compatibility: bool,
     signature: Option<String>,
+) -> (Router, Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
+    app_with_models(compatibility, signature, Models::default()).await
+}
+
+async fn app_with_models(
+    compatibility: bool,
+    signature: Option<String>,
+    models: Models,
 ) -> (Router, Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
     let calls = Arc::new(AtomicUsize::new(0));
     let counter = calls.clone();
@@ -117,7 +126,7 @@ async fn app_with_signature(
     };
     let gateway = GatewayClient::new(&endpoint, &credentials.api_key).unwrap();
     (
-        server::router_with_mode(
+        server::router_with_models(
             credentials,
             TOKEN.into(),
             gateway,
@@ -126,10 +135,41 @@ async fn app_with_signature(
             } else {
                 Mode::Strict
             },
+            models,
         ),
         calls,
         task,
     )
+}
+
+#[tokio::test]
+async fn account_models_route_exact_uids_and_reject_unlisted_variants() {
+    let models = Models::parse(&json!({"families":[{"variants":[
+        {"model_uid":"MODEL_PRIVATE_11","label":"Legacy Claude"},
+        {"model_uid":"fusion-claude-sidekick-swe","label":"Fusion"}
+    ]}]}))
+    .unwrap();
+    let (app, calls, task) = app_with_models(true, None, models).await;
+    for uid in ["MODEL_PRIVATE_11", "fusion-claude-sidekick-swe"] {
+        let alias = format!("devin-{uid}");
+        let response = app
+            .clone()
+            .oneshot(request(json!({"model":alias,"input":"hello"})))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), 65536).await.unwrap();
+        let result: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(result["model"], alias);
+        assert_eq!(result["x_devin_usage"]["actual_model_uid"], uid);
+    }
+    let response = app
+        .oneshot(request(json!({"model":"devin-unlisted","input":"hello"})))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    task.abort();
 }
 
 fn request(body: Value) -> Request<Body> {
