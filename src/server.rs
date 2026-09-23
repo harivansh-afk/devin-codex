@@ -1,6 +1,7 @@
 //! Authenticated loopback HTTP boundary. Dropping an SSE body drops inference.
 use crate::{
-    Mode, adapter::Adapter, config::Credentials, gateway::GatewayClient, request::Problem,
+    Mode, adapter::Adapter, config::Credentials, gateway::GatewayClient, models::Models,
+    request::Problem,
 };
 use axum::{
     Json, Router,
@@ -37,9 +38,19 @@ pub fn router_with_mode(
     gateway: GatewayClient,
     mode: Mode,
 ) -> Router {
+    router_with_models(credentials, token, gateway, mode, Models::default())
+}
+
+pub fn router_with_models(
+    credentials: Credentials,
+    token: String,
+    gateway: GatewayClient,
+    mode: Mode,
+    models: Models,
+) -> Router {
     let state = Arc::new(AppState {
         authorization: format!("Bearer {token}").into_bytes(),
-        adapter: Adapter::new(credentials, gateway, mode),
+        adapter: Adapter::with_models(credentials, gateway, mode, models),
     });
     Router::new()
         .route("/healthz", get(health))

@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand};
 use devin_codex::{
-    Mode, config, gateway::GatewayClient, request::audit_request, server, session, smoke,
+    Mode, config, gateway::GatewayClient, models::Models, request::audit_request, server, session,
+    smoke,
 };
 use std::{
     ffi::OsString,
@@ -147,7 +148,11 @@ async fn run(cli: Cli) -> Result<u8, &'static str> {
             args,
             options,
         } => {
-            let session = start_session(cli.credentials.as_deref(), Mode::Codex).await?;
+            let models = Models::load(&options.devin).await?;
+            let credentials = config::load_credentials(cli.credentials.as_deref())
+                .map_err(|_| "Cannot read Devin credentials. Sign in with Devin first.")?;
+            let session =
+                session::Session::start_with_models(credentials, Mode::Codex, models).await?;
             eprintln!(
                 "Devin compatibility mode: translated instructions/tools; web and image generation unavailable."
             );

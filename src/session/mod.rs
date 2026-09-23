@@ -3,6 +3,7 @@ use crate::{
     Mode,
     config::{Credentials, random_token},
     gateway::GatewayClient,
+    models::Models,
     server,
 };
 use std::{
@@ -18,14 +19,31 @@ use catalog::Catalog;
 #[path = "../../tests/unit/session.rs"]
 mod tests;
 
-#[derive(clap::Args, Default)]
+#[derive(clap::Args)]
 pub struct RunOptions {
+    /// Devin CLI used to list models for this account.
+    #[arg(long, default_value = "devin")]
+    pub devin: PathBuf,
+    /// Select an exact Devin model UID (or its devin-prefixed catalog alias).
+    #[arg(long)]
+    pub model: Option<String>,
     /// Override reasoning effort for this session without changing the saved profile.
     #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(crate::compat::EFFORTS.iter().copied()))]
     pub reasoning_effort: Option<String>,
     /// Trust this project directory for this session.
     #[arg(long)]
     pub trust_project: Option<PathBuf>,
+}
+
+impl Default for RunOptions {
+    fn default() -> Self {
+        Self {
+            devin: PathBuf::from("devin"),
+            model: None,
+            reasoning_effort: None,
+            trust_project: None,
+        }
+    }
 }
 
 #[cfg(unix)]
@@ -49,6 +67,7 @@ pub struct Session {
     pub url: String,
     pub token: String,
     stop: Option<oneshot::Sender<()>>,
+    models: Models,
 }
 
 impl Session {
@@ -59,6 +78,14 @@ impl Session {
     pub async fn start_with_mode(
         credentials: Credentials,
         mode: Mode,
+    ) -> Result<Self, &'static str> {
+        Self::start_with_models(credentials, mode, Models::default()).await
+    }
+
+    pub async fn start_with_models(
+        credentials: Credentials,
+        mode: Mode,
+        models: Models,
     ) -> Result<Self, &'static str> {
         let gateway = GatewayClient::new(&credentials.endpoint, &credentials.api_key)
             .map_err(|_| "Cannot configure gateway transport.")?;
@@ -72,7 +99,8 @@ impl Session {
                 .map_err(|_| "Cannot read listener address.")?
         );
         let token = random_token();
-        let router = server::router_with_mode(credentials, token.clone(), gateway, mode);
+        let router =
+            server::router_with_models(credentials, token.clone(), gateway, mode, models.clone());
         let (stop, stopped) = oneshot::channel();
         tokio::spawn(async move {
             let _ = axum::serve(listener, router)
@@ -85,6 +113,7 @@ impl Session {
             url,
             token,
             stop: Some(stop),
+            models,
         })
     }
 
@@ -94,7 +123,7 @@ impl Session {
         args: &[OsString],
         options: &RunOptions,
     ) -> Result<u8, &'static str> {
-        let catalog = Catalog::load(binary).await?;
+        let catalog = Catalog::load(binary, &self.models).await?;
         let mut command = self.command(binary, args, Some(catalog.path()), options)?;
         let detached = args.first().is_some_and(|a| a == "exec");
         #[cfg(unix)]
@@ -170,9 +199,35 @@ impl Session {
         }
         let mut command = Command::new(binary);
         command.args(["--profile", "devin-codex"]);
+        let default_model =
+            if self.models.entries().is_empty() || self.models.contains_uid("gpt-6-astra-medium") {
+                crate::compat::MODEL
+            } else {
+                &self.models.entries()[0].alias
+            };
+        let selected_model = match options.model.as_deref() {
+            None => default_model,
+            Some(model)
+                if model == crate::compat::MODEL
+                    && (self.models.entries().is_empty()
+                        || self.models.contains_uid("gpt-6-astra-medium")) =>
+            {
+                model
+            }
+            Some(model) => self
+                .models
+                .entries()
+                .iter()
+                .find(|entry| entry.uid == model || entry.alias == model)
+                .map(|entry| entry.alias.as_str())
+                .ok_or("Model is not in your Devin catalog.")?,
+        };
+        if selected_model != crate::compat::MODEL && options.reasoning_effort.is_some() {
+            return Err("Reasoning effort is encoded in the selected Devin variant.");
+        }
         for setting in [
             "model_provider=\"devin\"".to_owned(),
-            format!("model=\"{}\"", crate::compat::MODEL),
+            format!("model={}", toml::Value::String(selected_model.into())),
             format!(
                 "model_providers.devin={{name=\"Devin\",base_url=\"{}\",wire_api=\"responses\",env_key=\"DEVIN_CODEX_SESSION_TOKEN\",requires_openai_auth=false,supports_websockets=false,request_max_retries=0,stream_max_retries=0}}",
                 self.url

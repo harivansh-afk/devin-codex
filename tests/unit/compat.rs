@@ -91,6 +91,51 @@ fn devin_model_alias_preserves_effort_and_response_identity() {
 }
 
 #[test]
+fn account_variant_routes_exact_uid_and_restores_alias() {
+    let models = crate::models::Models::parse(&json!({"families":[{"variants":[
+        {"model_uid":"MODEL_PRIVATE_11","label":"Legacy Claude","max_output_tokens":8192},
+        {"model_uid":"fusion-claude-sidekick-swe","label":"Fusion"}
+    ]}]}))
+    .unwrap();
+    let credentials = Credentials {
+        api_key: "test".into(),
+        endpoint: "https://example.invalid".into(),
+        device_id: String::new(),
+        client_version: String::new(),
+    };
+    for uid in ["MODEL_PRIVATE_11", "fusion-claude-sidekick-swe"] {
+        let alias = format!("devin-{uid}");
+        let (body, mapping) = Compatibility::prepare_with_models(
+            &json!({"model":alias,"input":"hello","reasoning":{"effort":"medium"}}),
+            &models,
+        )
+        .unwrap();
+        let translated =
+            crate::request::translate_with_models(&body, &credentials, &models).unwrap();
+        assert_eq!(translated.request.model, uid);
+        if uid == "MODEL_PRIVATE_11" {
+            assert_eq!(
+                translated.request.completion_config.unwrap().max_tokens,
+                8192
+            );
+        }
+        let mut event = json!({"type":"response.completed","response":{"model":uid}});
+        mapping.restore(&mut event);
+        assert_eq!(event["response"]["model"], alias);
+    }
+    let (unknown, _) = Compatibility::prepare_with_models(
+        &json!({"model":"devin-unknown","input":"hello"}),
+        &models,
+    )
+    .unwrap();
+    assert!(crate::request::translate_with_models(&unknown, &credentials, &models).is_err());
+    assert!(
+        !crate::request::audit_request(&json!({"model":"MODEL_PRIVATE_11","input":"hello"}))
+            .is_empty()
+    );
+}
+
+#[test]
 fn collaboration_uses_codex_plaintext_dispatch_without_changing_other_tools() {
     for name in ["spawn_agent", "send_message", "followup_task"] {
         for namespace in ["collaboration", "other"] {

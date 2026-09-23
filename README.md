@@ -2,7 +2,8 @@
 
 Use the Codex TUI with Devin inference.
 
-Requires an installed Codex with the Astra catalog (tested: 0.155.1) and a Devin login.
+Requires an installed Codex with the Astra catalog (tested: 0.155.1), Devin CLI
+on PATH, and a Devin login.
 
 ```sh
 nix profile add git+https://git.harivan.sh/harivansh-afk/devin-codex
@@ -20,12 +21,21 @@ devin-codex run -- exec 'Fix the failing tests'
 devin-codex run -- --no-alt-screen
 ```
 
-`run --codex PATH -- ...` selects another Codex binary. `--credentials PATH`
-selects a Devin credentials file. The flake packages the adapter; Codex must be
+`run --codex PATH -- ...` selects another Codex binary; `run --devin PATH`
+selects another Devin CLI for model discovery. `--credentials PATH` selects a
+Devin credentials file. The flake packages only the adapter; both CLIs must be
 on PATH. Flake consumers can use `inputs.devin-codex.packages.${system}.default`.
 
-Use `run --reasoning-effort low|medium|high|xhigh|max` to override reasoning for one
-session, and `--trust-project PATH` to trust that project for the session. Neither
+For a large catalog, choose a specific variant by its Devin UID instead of
+scrolling `/model`:
+
+```sh
+devin-codex run --model claude-opus-5-5-high
+devin-codex run --model fusion-claude-fable-5-1-medium-sidekick-swe-2-medium
+```
+
+Use `run --reasoning-effort low|medium|high|xhigh|max` to override Astra's reasoning
+for one session, and `--trust-project PATH` to trust that project for the session. Neither
 option rewrites the saved profile. Codex arguments still go after `--`:
 
 ```sh
@@ -35,8 +45,21 @@ devin-codex run --reasoning-effort medium --trust-project "$PWD" -- resume --las
 ## What changes
 
 The launcher starts an authenticated loopback adapter and a child Codex process.
-It uses the installed Codex's bundled Astra harness settings, your existing base
-configuration, the `devin-codex` profile, and a temporary provider token. 
+At launch, it reads `devin models list --format json` and exposes each available
+variant in Codex's `/model` selector (including Fusion and legacy model UIDs).
+The entries are named after the exact Devin variants; select the desired
+thinking/fast variant there rather than changing Codex's reasoning effort.
+`gpt-6-astra-devin` remains available for existing sessions and supports the
+reasoning-effort preset. Other variants use their exact gateway UID, independent
+of Codex's reasoning-effort setting. Model availability and billing follow your
+Devin account. The catalog is refreshed on every launch, not stored in your
+Codex profile.
+
+It reuses the installed Codex's bundled Astra harness settings for every
+variant, your existing base configuration, the `devin-codex` profile, and a
+temporary provider token. This is a compatibility harness, not native Devin
+behavior; non-Astra variants have not been live-validated for tool or reasoning
+parity.
 
 
 Codex writes profile settings to `$CODEX_HOME/devin-codex.config.toml` (normally under `~/.codex`);
@@ -73,7 +96,7 @@ Full Codex parity is not claimed. Current gaps:
 - Compaction uses Codex's local summarization path, not native remote compaction.
   Completed tool history is retained even when its tool definitions are no longer
   advertised. Long-session reliability and dynamic tool updates need more testing.
-- Only Astra is exposed. Standard token totals can be unavailable when the gateway
+- Standard token totals can be unavailable when the gateway
   reports cache usage; the context indicator is not a reliable billing/usage meter.
 
 Local MCP tools use the same translation, but have not been live-tested.
