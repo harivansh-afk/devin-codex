@@ -26,16 +26,15 @@ selects another Devin CLI for model discovery. `--credentials PATH` selects a
 Devin credentials file. The flake packages only the adapter; both CLIs must be
 on PATH. Flake consumers can use `inputs.devin-codex.packages.${system}.default`.
 
-For a large catalog, choose a specific variant by its Devin UID instead of
-scrolling `/model`:
+Choose a family in `/model` or at launch:
 
 ```sh
-devin-codex run --model claude-opus-5-5-high
-devin-codex run --model fusion-claude-fable-5-1-medium-sidekick-swe-2-medium
+devin-codex run --model gpt-6-sol --reasoning-effort high
+devin-codex run --model fable-5-1-fusion
 ```
 
-Use `run --reasoning-effort low|medium|high|xhigh|max` to override Astra's reasoning
-for one session, and `--trust-project PATH` to trust that project for the session. Neither
+Use `run --reasoning-effort low|medium|high|xhigh|max` for a level available
+on the selected family, and `--trust-project PATH` to trust that project for the session. Neither
 option rewrites the saved profile. Codex arguments still go after `--`:
 
 ```sh
@@ -45,21 +44,20 @@ devin-codex run --reasoning-effort medium --trust-project "$PWD" -- resume --las
 ## What changes
 
 The launcher starts an authenticated loopback adapter and a child Codex process.
-At launch, it reads `devin models list --format json` and exposes each available
-variant in Codex's `/model` selector (including Fusion and legacy model UIDs).
-The entries are named after the exact Devin variants; select the desired
-thinking/fast variant there rather than changing Codex's reasoning effort.
-`gpt-6-astra-devin` remains available for existing sessions and supports the
-reasoning-effort preset. Other variants use their exact gateway UID, independent
-of Codex's reasoning-effort setting. Model availability and billing follow your
-Devin account. The catalog is refreshed on every launch, not stored in your
-Codex profile.
+At launch, it reads `devin models list --format json` and exposes a small
+account-checked menu: GPT-6 Sol, GPT-6 Astra, Claude Opus 5.5, and Fable 5.1
+High + SWE-2 Medium (Devin Fusion). Available reasoning levels appear under
+each direct model; Fusion has one fixed pairing. Priority/fast variants and
+other families stay out of the selector. `gpt-6-astra-devin` remains the Astra
+alias for existing sessions. Model availability and billing follow your Devin
+account. The catalog is refreshed on every launch, not stored in your Codex
+profile.
 
 It reuses the installed Codex's bundled Astra harness settings for every
 variant, your existing base configuration, the `devin-codex` profile, and a
 temporary provider token. This is a compatibility harness, not native Devin
-behavior; non-Astra variants have not been live-validated for tool or reasoning
-parity.
+behavior; non-Astra variants, especially Fusion, have not been live-validated
+for tool or reasoning parity.
 
 
 Codex writes profile settings to `$CODEX_HOME/devin-codex.config.toml` (normally under `~/.codex`);
