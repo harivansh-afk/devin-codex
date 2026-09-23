@@ -1,4 +1,5 @@
-//! Account-specific Devin variants used by the Codex selector and request router.
+//! Small, account-checked model menu and exact Devin gateway routing.
+use crate::compat::{EFFORTS, MODEL};
 use serde_json::Value;
 use std::{collections::HashMap, path::Path};
 use tokio::process::Command;
@@ -7,19 +8,54 @@ use tokio::process::Command;
 #[path = "../tests/unit/models.rs"]
 mod tests;
 
+const FABLE_UID: &str = "fusion-claude-fable-5-1-high-sidekick-swe-2-medium";
+const CHOICES: &[(&str, &str, &str, &str)] = &[
+    (
+        "gpt-6-sol",
+        "gpt-6-sol",
+        "devin-gpt-6-sol",
+        "GPT-6 Sol (Devin)",
+    ),
+    ("gpt-6-astra", "gpt-6-astra", MODEL, "GPT-6 Astra (Devin)"),
+    (
+        "claude-opus-5.5",
+        "claude-opus-5-5",
+        "devin-claude-opus-5-5",
+        "Claude Opus 5.5 (Devin)",
+    ),
+];
+
 #[derive(Clone, Default)]
 pub struct Models {
     entries: Vec<Model>,
-    by_alias: HashMap<String, String>,
 }
 
 #[derive(Clone)]
 pub struct Model {
     pub alias: String,
-    pub uid: String,
+    pub slug: String,
     pub label: String,
     pub context: u64,
+    pub variants: HashMap<String, Variant>,
+}
+
+#[derive(Clone)]
+pub struct Variant {
+    pub uid: String,
     pub output: u64,
+}
+
+impl Model {
+    pub fn default_effort(&self) -> &str {
+        if self.variants.contains_key("medium") {
+            "medium"
+        } else {
+            EFFORTS
+                .iter()
+                .find(|effort| self.variants.contains_key(**effort))
+                .expect("catalog has a supported variant")
+        }
+    }
 }
 
 impl Models {
@@ -27,42 +63,64 @@ impl Models {
         let families = value["families"]
             .as_array()
             .ok_or("Cannot read Devin model families.")?;
-        let mut result = Self::default();
-        for family in families {
+        let mut entries = Vec::new();
+        for (family_slug, uid_prefix, alias, label) in CHOICES {
+            let Some(family) = families.iter().find(|f| f["slug"] == *family_slug) else {
+                continue;
+            };
             let variants = family["variants"]
                 .as_array()
                 .ok_or("Cannot read Devin model variants.")?;
-            for variant in variants {
-                let uid = variant["model_uid"]
-                    .as_str()
-                    .ok_or("Devin model has no UID.")?;
-                if uid.is_empty()
-                    || uid.len() > 200
-                    || !uid
-                        .bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-                {
-                    return Err("Devin model UID is invalid.");
+            let mut model = Model {
+                alias: (*alias).into(),
+                slug: (*uid_prefix).into(),
+                label: (*label).into(),
+                context: 272000,
+                variants: HashMap::new(),
+            };
+            for effort in EFFORTS {
+                let uid = format!("{uid_prefix}-{effort}");
+                if let Some(variant) = variants.iter().find(|v| v["model_uid"] == uid) {
+                    model.context = variant["max_context_tokens"]
+                        .as_u64()
+                        .unwrap_or(model.context);
+                    model.variants.insert(
+                        (*effort).into(),
+                        Variant {
+                            uid,
+                            output: variant["max_output_tokens"].as_u64().unwrap_or(128000),
+                        },
+                    );
                 }
-                let alias = format!("devin-{uid}");
-                if result.by_alias.contains_key(&alias) {
-                    return Err("Devin model UID is duplicated.");
-                }
-                let label = variant["label"].as_str().unwrap_or(uid);
-                result.by_alias.insert(alias.clone(), uid.into());
-                result.entries.push(Model {
-                    alias,
-                    uid: uid.into(),
-                    label: format!("{label} (Devin)"),
-                    context: variant["max_context_tokens"].as_u64().unwrap_or(272000),
-                    output: variant["max_output_tokens"].as_u64().unwrap_or(128000),
-                });
+            }
+            if !model.variants.is_empty() {
+                entries.push(model);
             }
         }
-        if result.entries.is_empty() {
-            return Err("Devin returned no model variants.");
+        if let Some(variant) = families
+            .iter()
+            .find(|family| family["slug"] == "fusion")
+            .and_then(|family| family["variants"].as_array())
+            .and_then(|variants| variants.iter().find(|v| v["model_uid"] == FABLE_UID))
+        {
+            entries.push(Model {
+                alias: "devin-fable-5-1-fusion".into(),
+                slug: "fable-5-1-fusion".into(),
+                label: "Fable 5.1 High + SWE-2 (Devin Fusion)".into(),
+                context: variant["max_context_tokens"].as_u64().unwrap_or(272000),
+                variants: HashMap::from([(
+                    "medium".into(),
+                    Variant {
+                        uid: FABLE_UID.into(),
+                        output: variant["max_output_tokens"].as_u64().unwrap_or(128000),
+                    },
+                )]),
+            });
         }
-        Ok(result)
+        if entries.is_empty() {
+            return Err("None of the selected Devin models are available to this account.");
+        }
+        Ok(Self { entries })
     }
 
     pub async fn load(binary: &Path) -> Result<Self, &'static str> {
@@ -88,18 +146,13 @@ impl Models {
         &self.entries
     }
 
-    pub fn uid(&self, alias: &str) -> Option<&str> {
-        self.by_alias.get(alias).map(String::as_str)
-    }
-
-    pub fn contains_uid(&self, uid: &str) -> bool {
-        self.by_alias.values().any(|value| value == uid)
-    }
-
-    pub fn max_output(&self, uid: &str) -> Option<u64> {
+    pub fn model(&self, alias_or_slug: &str) -> Option<&Model> {
         self.entries
             .iter()
-            .find(|entry| entry.uid == uid)
-            .map(|entry| entry.output)
+            .find(|entry| entry.alias == alias_or_slug || entry.slug == alias_or_slug)
+    }
+
+    pub fn by_slug(&self, slug: &str) -> Option<&Model> {
+        self.entries.iter().find(|entry| entry.slug == slug)
     }
 }

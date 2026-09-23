@@ -70,15 +70,15 @@ impl Compatibility {
             .ok_or_else(|| problem("Expected request object."))?;
         prepare_options(obj)?;
         let alias = obj.get("model").and_then(Value::as_str).unwrap_or_default();
-        let uid = if alias == MODEL {
+        let slug = if alias == MODEL && models.entries().is_empty() {
             Some("gpt-6-astra")
         } else {
-            models.uid(alias)
+            models.model(alias).map(|model| model.slug.as_str())
         };
         let mut this = Self::default();
-        if let Some(uid) = uid {
+        if let Some(slug) = slug {
             this.model_alias = Some(alias.into());
-            obj.insert("model".into(), json!(uid));
+            obj.insert("model".into(), json!(slug));
         }
         let mut definitions = Vec::new();
         if let Some(tools) = obj.get("tools") {

@@ -92,10 +92,11 @@ fn devin_model_alias_preserves_effort_and_response_identity() {
 
 #[test]
 fn account_variant_routes_exact_uid_and_restores_alias() {
-    let models = crate::models::Models::parse(&json!({"families":[{"variants":[
-        {"model_uid":"MODEL_PRIVATE_11","label":"Legacy Claude","max_output_tokens":8192},
-        {"model_uid":"fusion-claude-sidekick-swe","label":"Fusion"}
-    ]}]}))
+    let models = crate::models::Models::parse(&json!({"families":[
+        {"slug":"gpt-6-sol","variants":[{"model_uid":"gpt-6-sol-medium"},{"model_uid":"gpt-6-sol-high"}]},
+        {"slug":"claude-opus-5.5","variants":[{"model_uid":"claude-opus-5-5-high","max_output_tokens":8192}]},
+        {"slug":"fusion","variants":[{"model_uid":"fusion-claude-fable-5-1-high-sidekick-swe-2-medium"}]}
+    ]}))
     .unwrap();
     let credentials = Credentials {
         api_key: "test".into(),
@@ -103,23 +104,30 @@ fn account_variant_routes_exact_uid_and_restores_alias() {
         device_id: String::new(),
         client_version: String::new(),
     };
-    for uid in ["MODEL_PRIVATE_11", "fusion-claude-sidekick-swe"] {
-        let alias = format!("devin-{uid}");
+    for (alias, effort, uid) in [
+        ("devin-gpt-6-sol", "high", "gpt-6-sol-high"),
+        ("devin-claude-opus-5-5", "high", "claude-opus-5-5-high"),
+        (
+            "devin-fable-5-1-fusion",
+            "medium",
+            "fusion-claude-fable-5-1-high-sidekick-swe-2-medium",
+        ),
+    ] {
         let (body, mapping) = Compatibility::prepare_with_models(
-            &json!({"model":alias,"input":"hello","reasoning":{"effort":"medium"}}),
+            &json!({"model":alias,"input":"hello","reasoning":{"effort":effort}}),
             &models,
         )
         .unwrap();
         let translated =
             crate::request::translate_with_models(&body, &credentials, &models).unwrap();
         assert_eq!(translated.request.model, uid);
-        if uid == "MODEL_PRIVATE_11" {
+        if uid == "claude-opus-5-5-high" {
             assert_eq!(
                 translated.request.completion_config.unwrap().max_tokens,
                 8192
             );
         }
-        let mut event = json!({"type":"response.completed","response":{"model":uid}});
+        let mut event = json!({"type":"response.completed","response":{"model":body["model"]}});
         mapping.restore(&mut event);
         assert_eq!(event["response"]["model"], alias);
     }
@@ -130,9 +138,15 @@ fn account_variant_routes_exact_uid_and_restores_alias() {
     .unwrap();
     assert!(crate::request::translate_with_models(&unknown, &credentials, &models).is_err());
     assert!(
-        !crate::request::audit_request(&json!({"model":"MODEL_PRIVATE_11","input":"hello"}))
+        !crate::request::audit_request(&json!({"model":"claude-opus-5-5","input":"hello"}))
             .is_empty()
     );
+    let (unsupported, _) = Compatibility::prepare_with_models(
+        &json!({"model":"devin-fable-5-1-fusion","input":"hello","reasoning":{"effort":"high"}}),
+        &models,
+    )
+    .unwrap();
+    assert!(crate::request::translate_with_models(&unsupported, &credentials, &models).is_err());
 }
 
 #[test]

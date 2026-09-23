@@ -144,17 +144,25 @@ async fn app_with_models(
 
 #[tokio::test]
 async fn account_models_route_exact_uids_and_reject_unlisted_variants() {
-    let models = Models::parse(&json!({"families":[{"variants":[
-        {"model_uid":"MODEL_PRIVATE_11","label":"Legacy Claude"},
-        {"model_uid":"fusion-claude-sidekick-swe","label":"Fusion"}
-    ]}]}))
+    let models = Models::parse(&json!({"families":[
+        {"slug":"gpt-6-sol","variants":[{"model_uid":"gpt-6-sol-high"}]},
+        {"slug":"fusion","variants":[{"model_uid":"fusion-claude-fable-5-1-high-sidekick-swe-2-medium"}]}
+    ]}))
     .unwrap();
     let (app, calls, task) = app_with_models(true, None, models).await;
-    for uid in ["MODEL_PRIVATE_11", "fusion-claude-sidekick-swe"] {
-        let alias = format!("devin-{uid}");
+    for (alias, effort, uid) in [
+        ("devin-gpt-6-sol", "high", "gpt-6-sol-high"),
+        (
+            "devin-fable-5-1-fusion",
+            "medium",
+            "fusion-claude-fable-5-1-high-sidekick-swe-2-medium",
+        ),
+    ] {
         let response = app
             .clone()
-            .oneshot(request(json!({"model":alias,"input":"hello"})))
+            .oneshot(request(
+                json!({"model":alias,"input":"hello","reasoning":{"effort":effort}}),
+            ))
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
