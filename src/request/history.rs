@@ -1,6 +1,6 @@
-use super::{Problem, audit::*, optional_text, text};
-use crate::{proto, tools::ToolKind};
-use serde_json::{Value, json};
+use super::{Problem, audit::*};
+use crate::{content::Content, proto, tools::ToolKind};
+use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
@@ -8,52 +8,25 @@ fn text_part(value: &Value, kind: &str) -> bool {
     value["type"].as_str() == Some(kind) && value["text"].is_string()
 }
 
-fn audit_content(content: Option<&Value>, role: Option<&str>, path: &str, out: &mut Vec<Problem>) {
-    match content {
-        Some(Value::String(_)) => {}
-        Some(Value::Array(parts)) => {
-            let expected = if role == Some("assistant") {
-                "output_text"
-            } else {
-                "input_text"
-            };
-            if parts.len() != 1 || !text_part(&parts[0], expected) {
-                bad(
-                    out,
-                    format!("{path}.content"),
-                    "Only one text part is supported; no flattening or image substitution.",
-                );
-            } else {
-                let part = parts[0].as_object().unwrap();
-                unknown(
-                    out,
-                    part,
-                    if expected == "output_text" {
-                        &["type", "text", "annotations", "logprobs"]
-                    } else {
-                        &["type", "text"]
-                    },
-                    &format!("{path}.content[0]"),
-                );
-                for key in ["annotations", "logprobs"] {
-                    if part.get(key).is_some_and(|v| v != &json!([])) {
-                        bad(
-                            out,
-                            format!("{path}.content[0].{key}"),
-                            "Only empty annotation/logprob arrays are supported.",
-                        );
-                    }
-                }
-            }
+fn content(value: Option<&Value>, assistant: bool, path: &str, out: &mut Vec<Problem>) -> Content {
+    match Content::parse(value.unwrap_or(&Value::Null), assistant) {
+        Ok(content) => content,
+        Err(reason) => {
+            bad(out, path, reason);
+            Content::default()
         }
-        _ => bad(out, format!("{path}.content"), "Expected text."),
     }
 }
 
-pub(super) fn audit(items: &[Value], tool_types: &HashMap<&str, ToolKind>, out: &mut Vec<Problem>) {
+pub(super) fn parse(
+    items: &[Value],
+    tool_types: &HashMap<&str, ToolKind>,
+    out: &mut Vec<Problem>,
+) -> Vec<proto::ChatMessage> {
     let mut calls = HashMap::new();
     let mut all_call_ids = HashSet::new();
-    let mut pending_reasoning = false;
+    let mut reasoning = Vec::new();
+    let mut messages = Vec::new();
     for (i, item) in items.iter().enumerate() {
         let path = format!("input[{i}]");
         let Some(item) = item.as_object() else {
@@ -81,6 +54,12 @@ pub(super) fn audit(items: &[Value], tool_types: &HashMap<&str, ToolKind>, out: 
                 );
             }
         }
+        let mut message = proto::ChatMessage {
+            id: field_str(item, "id")
+                .map(str::to_owned)
+                .unwrap_or_else(|| Uuid::new_v4().to_string()),
+            ..Default::default()
+        };
         let allowed: &[&str] = match kind {
             Some("additional_tools") => {
                 bad(
@@ -99,16 +78,23 @@ pub(super) fn audit(items: &[Value], tool_types: &HashMap<&str, ToolKind>, out: 
                         "Developer/system message boundaries cannot be preserved by concatenation.",
                     );
                 }
-                audit_content(item.get("content"), role, &path, out);
+                let content = content(
+                    item.get("content"),
+                    role == Some("assistant"),
+                    &format!("{path}.content"),
+                    out,
+                );
+                message.role = if role == Some("assistant") { 2 } else { 1 };
+                message.content = content.text;
+                message.images = content.images;
+                message.phase = field_str(item, "phase").unwrap_or_default().into();
                 if item.contains_key("phase")
                     && (role != Some("assistant")
                         || !str_is(item.get("phase"), &["commentary", "final_answer"]))
                 {
                     bad(out, format!("{path}.phase"), "Unknown phase.");
                 }
-                if role == Some("assistant") {
-                    pending_reasoning = false;
-                } else if pending_reasoning {
+                if role != Some("assistant") && !reasoning.is_empty() {
                     bad(
                         out,
                         &path,
@@ -145,7 +131,14 @@ pub(super) fn audit(items: &[Value], tool_types: &HashMap<&str, ToolKind>, out: 
                 if !item.get(kind.input_key()).is_some_and(Value::is_string) {
                     bad(out, &path, "Tool input must be the original string.");
                 }
-                pending_reasoning = false;
+                message.role = 2;
+                message.tool_calls.push(proto::ToolCall {
+                    id: field_str(item, "call_id").unwrap_or_default().into(),
+                    name: field_str(item, "name").unwrap_or_default().into(),
+                    arguments_json: field_str(item, kind.input_key()).unwrap_or_default().into(),
+                    is_custom_tool_call: (kind == ToolKind::Custom).then_some(true),
+                    ..Default::default()
+                });
                 kind.call_fields()
             }
             Some(kind @ ("function_call_output" | "custom_tool_call_output")) => {
@@ -165,14 +158,12 @@ pub(super) fn audit(items: &[Value], tool_types: &HashMap<&str, ToolKind>, out: 
                     ),
                     _ => {}
                 }
-                if !item.get("output").is_some_and(Value::is_string) {
-                    bad(
-                        out,
-                        format!("{path}.output"),
-                        "Only text tool results are supported.",
-                    );
-                }
-                if pending_reasoning {
+                let content = content(item.get("output"), false, &format!("{path}.output"), out);
+                message.role = 4;
+                message.content = content.text;
+                message.images = content.images;
+                message.tool_call_id = field_str(item, "call_id").unwrap_or_default().into();
+                if !reasoning.is_empty() {
                     bad(out, &path, "Reasoning cannot attach to a tool result.");
                 }
                 &["type", "id", "call_id", "output", "status"]
@@ -205,7 +196,6 @@ pub(super) fn audit(items: &[Value], tool_types: &HashMap<&str, ToolKind>, out: 
                         }
                     }
                 }
-                pending_reasoning = true;
                 &[
                     "type",
                     "id",
@@ -225,8 +215,19 @@ pub(super) fn audit(items: &[Value], tool_types: &HashMap<&str, ToolKind>, out: 
             }
         };
         unknown(out, item, allowed, &path);
+        if kind == Some("reasoning") {
+            reasoning.push(items[i].clone());
+        } else {
+            if message.role == 2 && !reasoning.is_empty() {
+                message.reasoning =
+                    serde_json::to_string(&reasoning).expect("JSON values serialize");
+                message.reasoning_type = "openai".into();
+                reasoning.clear();
+            }
+            messages.push(message);
+        }
     }
-    if pending_reasoning {
+    if !reasoning.is_empty() {
         bad(
             out,
             "input",
@@ -239,65 +240,6 @@ pub(super) fn audit(items: &[Value], tool_types: &HashMap<&str, ToolKind>, out: 
             "input",
             "Unanswered tool calls remain in input history.",
         );
-    }
-}
-
-pub(super) fn translate(input: &Value) -> Vec<proto::ChatMessage> {
-    let owned;
-    let items = if let Some(text) = input.as_str() {
-        owned = vec![json!({"role":"user", "content":text})];
-        &owned
-    } else {
-        input.as_array().expect("validated input")
-    };
-    let mut messages = Vec::new();
-    let mut reasoning = Vec::new();
-    for item in items {
-        let kind = item["type"].as_str().unwrap_or("message");
-        if kind == "reasoning" {
-            reasoning.push(item.clone());
-            continue;
-        }
-        let mut message = proto::ChatMessage {
-            id: item["id"]
-                .as_str()
-                .map(str::to_owned)
-                .unwrap_or_else(|| Uuid::new_v4().to_string()),
-            ..Default::default()
-        };
-        match kind {
-            "message" => {
-                message.role = if item["role"] == "user" { 1 } else { 2 };
-                message.content = item["content"]
-                    .as_str()
-                    .unwrap_or_else(|| item["content"][0]["text"].as_str().expect("validated text"))
-                    .into();
-                message.phase = optional_text(&item["phase"]).into();
-            }
-            "function_call" | "custom_tool_call" => {
-                let kind = ToolKind::from_call(kind).expect("validated tool call");
-                message.role = 2;
-                message.tool_calls.push(proto::ToolCall {
-                    id: text(&item["call_id"]).into(),
-                    name: text(&item["name"]).into(),
-                    arguments_json: text(&item[kind.input_key()]).into(),
-                    is_custom_tool_call: (kind == ToolKind::Custom).then_some(true),
-                    ..Default::default()
-                });
-            }
-            "function_call_output" | "custom_tool_call_output" => {
-                message.role = 4;
-                message.content = text(&item["output"]).into();
-                message.tool_call_id = text(&item["call_id"]).into();
-            }
-            _ => unreachable!("audit rejected unknown input kind"),
-        }
-        if !reasoning.is_empty() {
-            message.reasoning = serde_json::to_string(&reasoning).expect("JSON values serialize");
-            message.reasoning_type = "openai".into();
-            reasoning.clear();
-        }
-        messages.push(message);
     }
     messages
 }

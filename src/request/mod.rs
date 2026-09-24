@@ -47,10 +47,7 @@ pub fn translate_with_models(
     credentials: &Credentials,
     models: &Models,
 ) -> Result<Translation, Vec<Problem>> {
-    let problems = audit::audit_with_models(body, models);
-    if !problems.is_empty() {
-        return Err(problems);
-    }
+    let messages = audit::parse(body, models)?;
     let (tools, tool_map) = tools::translate(body.get("tools"));
     let effort = body
         .get("reasoning")
@@ -68,7 +65,7 @@ pub fn translate_with_models(
     let request = proto::ChatRequest {
         metadata: Some(metadata(credentials)),
         system_prompt: optional_text(&body["instructions"]).into(),
-        messages: history::translate(&body["input"]),
+        messages,
         request_type: 5,
         completion_config: Some(proto::CompletionConfig {
             num_completions: 1,

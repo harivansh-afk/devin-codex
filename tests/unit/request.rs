@@ -185,3 +185,65 @@ fn ranges_and_no_tools_choice() {
     assert!(!t.allow_tools);
     assert_eq!(t.request.tool_choice.unwrap().mode, "none");
 }
+
+#[test]
+fn images_preserve_bytes_order_and_tool_association() {
+    let first =
+        json!({"type":"input_image","image_url":"data:image/png;base64,AQID","detail":"original"});
+    let second = json!({"type":"input_image","image_url":"data:image/jpeg;base64,BAUG"});
+    for (call, result, key) in [
+        ("function_call", "function_call_output", "arguments"),
+        ("custom_tool_call", "custom_tool_call_output", "input"),
+    ] {
+        let body = json!({"model":"gpt-6-astra","input":[
+            {"role":"user","content":[{"type":"input_text","text":"first"},first,{"type":"input_text","text":"second"},second]},
+            {"type":call,"name":"capture","call_id":"screen","id":"original-call",key:"{}"},
+            {"type":result,"call_id":"screen","output":[{"type":"input_text","text":"captured"},second,first]}
+        ]});
+        let request = translate_request(&body, &creds()).unwrap().request;
+        assert_eq!(request.messages[0].content, "first\n\nsecond");
+        assert_eq!(request.messages[0].images[0].base64_data, "AQID");
+        assert_eq!(request.messages[0].images[1].mime_type, "image/jpeg");
+        assert_eq!(request.messages[2].role, 4);
+        assert_eq!(request.messages[2].tool_call_id, "screen");
+        assert_eq!(request.messages[2].content, "captured");
+        assert_eq!(request.messages[2].images[0].base64_data, "BAUG");
+        assert_eq!(request.messages[2].images[1].base64_data, "AQID");
+    }
+}
+
+#[test]
+fn invalid_images_fail_without_echoing_payloads() {
+    for image in [
+        json!({"type":"input_image","image_url":"https://private.invalid/secret"}),
+        json!({"type":"input_image","file_id":"secret"}),
+        json!({"type":"input_image","image_url":"data:image/svg+xml;base64,c2VjcmV0"}),
+        json!({"type":"input_image","image_url":"data:image/png;base64,secret!"}),
+        json!({"type":"input_image","image_url":"data:image/png;base64,"}),
+        json!({"type":"input_image","image_url":123}),
+        json!({"type":"input_image","image_url":"data:image/png;base64,AQID","detail":"secret"}),
+        json!({"type":"input_image","image_url":"data:image/png;base64,AQID","unknown":"secret"}),
+    ] {
+        let body = json!({"model":"gpt-6-astra","input":[{"role":"user","content":[image]}]});
+        let problems = audit_request(&body);
+        assert!(!problems.is_empty());
+        assert!(!serde_json::to_string(&problems).unwrap().contains("secret"));
+    }
+    let body = json!({"model":"gpt-6-astra","input":[{"role":"assistant","content":[{"type":"input_image","image_url":"data:image/png;base64,AQID"}]}]});
+    assert!(!audit_request(&body).is_empty());
+}
+
+#[test]
+fn easy_input_assistant_text_and_output_text_remain_compatible() {
+    for role in ["assistant", "user"] {
+        for kind in ["input_text", "output_text"] {
+            let body = json!({"model":"gpt-6-astra","input":[{"role":role,"content":[{"type":kind,"text":"previous answer"}]}]});
+            let translated = translate_request(&body, &creds()).unwrap();
+            assert_eq!(translated.request.messages[0].content, "previous answer");
+            assert_eq!(
+                translated.request.messages[0].role,
+                if role == "assistant" { 2 } else { 1 }
+            );
+        }
+    }
+}

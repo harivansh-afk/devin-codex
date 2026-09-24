@@ -148,7 +148,7 @@ pub fn load_local_token(path: Option<&Path>) -> Result<String, ConfigError> {
     Ok(token.into())
 }
 
-pub fn write_token(path: &Path) -> Result<(), ConfigError> {
+pub(crate) fn create_private_file(path: &Path) -> std::io::Result<fs::File> {
     let mut options = fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -156,8 +156,11 @@ pub fn write_token(path: &Path) -> Result<(), ConfigError> {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    let mut file = options
-        .open(path)
+    options.open(path)
+}
+
+pub fn write_token(path: &Path) -> Result<(), ConfigError> {
+    let mut file = create_private_file(path)
         .map_err(|_| ConfigError("Cannot create token file; existing files are never replaced"))?;
     use std::io::Write;
     writeln!(file, "{}", random_token()).map_err(|_| ConfigError("Cannot write token file"))

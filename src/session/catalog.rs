@@ -1,6 +1,6 @@
 use crate::{
     compat::{EFFORTS, MODEL},
-    config::random_token,
+    config::{create_private_file, random_token},
     models::Models,
 };
 use serde_json::{Value, json};
@@ -55,7 +55,7 @@ impl Catalog {
         }
         model["additional_speed_tiers"] = json!([]);
         model["service_tiers"] = json!([]);
-        model["input_modalities"] = json!(["text"]);
+        model["input_modalities"] = json!(["text", "image"]);
         model["supports_image_detail_original"] = json!(false);
         model["supports_search_tool"] = json!(false);
         model["upgrade"] = Value::Null;
@@ -106,16 +106,8 @@ impl Catalog {
         Self::prepare(&mut value, available)?;
         let bytes = serde_json::to_vec(&value).map_err(|_| "Cannot encode model catalog.")?;
         let path = std::env::temp_dir().join(format!("devin-codex-models-{}.json", random_token()));
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut file = options
-            .open(&path)
-            .map_err(|_| "Cannot create temporary model catalog.")?;
+        let mut file =
+            create_private_file(&path).map_err(|_| "Cannot create temporary model catalog.")?;
         let catalog = Self(path);
         file.write_all(&bytes)
             .map_err(|_| "Cannot write temporary model catalog.")?;

@@ -120,7 +120,7 @@ async fn run(cli: Cli) -> Result<u8, &'static str> {
             println!("Serving on http://127.0.0.1:{port}/v1 (compatibility={compatibility}).");
             axum::serve(
                 listener,
-                server::router_with_mode(
+                server::router(
                     credentials,
                     token,
                     gateway,
@@ -129,6 +129,7 @@ async fn run(cli: Cli) -> Result<u8, &'static str> {
                     } else {
                         Mode::Strict
                     },
+                    Models::default(),
                 ),
             )
             .with_graceful_shutdown(session::shutdown())
@@ -137,7 +138,10 @@ async fn run(cli: Cli) -> Result<u8, &'static str> {
             Ok(0)
         }
         Command::Test => {
-            let session = start_session(cli.credentials.as_deref(), Mode::Strict).await?;
+            let credentials = config::load_credentials(cli.credentials.as_deref())
+                .map_err(|_| "Cannot read Devin credentials. Sign in with Devin first.")?;
+            let session =
+                session::Session::start(credentials, Mode::Strict, Models::default()).await?;
             smoke::run(&session)
                 .await
                 .map_err(|_| "Live test failed. Check Devin access and the gateway protocol.")?;
@@ -151,21 +155,11 @@ async fn run(cli: Cli) -> Result<u8, &'static str> {
             let models = Models::load(&options.devin).await?;
             let credentials = config::load_credentials(cli.credentials.as_deref())
                 .map_err(|_| "Cannot read Devin credentials. Sign in with Devin first.")?;
-            let session =
-                session::Session::start_with_models(credentials, Mode::Codex, models).await?;
+            let session = session::Session::start(credentials, Mode::Codex, models).await?;
             eprintln!(
                 "Devin compatibility mode: translated instructions/tools; web and image generation unavailable."
             );
             session.run(&codex, &args, &options).await
         }
     }
-}
-
-async fn start_session(
-    path: Option<&std::path::Path>,
-    mode: Mode,
-) -> Result<session::Session, &'static str> {
-    let credentials = config::load_credentials(path)
-        .map_err(|_| "Cannot read Devin credentials. Sign in with Devin first.")?;
-    session::Session::start_with_mode(credentials, mode).await
 }

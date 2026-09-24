@@ -17,7 +17,7 @@ async fn launch_defaults_to_an_available_model_without_astra() {
         ]}]}),
     )
     .unwrap();
-    let session = Session::start_with_models(credentials(), Mode::Codex, models)
+    let session = Session::start(credentials(), Mode::Codex, models)
         .await
         .unwrap();
     let command = session
@@ -64,7 +64,9 @@ async fn launch_defaults_to_an_available_model_without_astra() {
 
 #[tokio::test]
 async fn private_listener_and_command_lifecycle() {
-    let session = Session::start(credentials()).await.unwrap();
+    let session = Session::start(credentials(), Mode::Strict, Models::default())
+        .await
+        .unwrap();
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(2))
         .build()
@@ -133,7 +135,9 @@ async fn private_listener_and_command_lifecycle() {
 
 #[tokio::test]
 async fn reasoning_presets_preserve_routing_and_reject_unknown_efforts() {
-    let session = Session::start(credentials()).await.unwrap();
+    let session = Session::start(credentials(), Mode::Strict, Models::default())
+        .await
+        .unwrap();
     for effort in crate::compat::EFFORTS {
         let options = RunOptions {
             reasoning_effort: Some((*effort).into()),
@@ -171,7 +175,9 @@ async fn reasoning_presets_preserve_routing_and_reject_unknown_efforts() {
 
 #[tokio::test]
 async fn trusted_project_paths_are_resolved_and_toml_escaped() {
-    let session = Session::start(credentials()).await.unwrap();
+    let session = Session::start(credentials(), Mode::Strict, Models::default())
+        .await
+        .unwrap();
     let path = std::env::temp_dir().join(format!("devin-project-\"{}", random_token()));
     std::fs::create_dir(&path).unwrap();
     let options = RunOptions {
@@ -206,5 +212,27 @@ async fn trusted_project_paths_are_resolved_and_toml_escaped() {
         session
             .command(Path::new("codex"), &[], None, &options)
             .is_err()
+    );
+}
+
+#[tokio::test]
+async fn multiple_efforts_leave_saved_selection_intact() {
+    let models = Models::parse(
+        &serde_json::json!({"families":[{"slug":"gpt-6-sol","variants":[
+            {"model_uid":"gpt-6-sol-medium"},{"model_uid":"gpt-6-sol-high"}
+        ]}]}),
+    )
+    .unwrap();
+    let session = Session::start(credentials(), Mode::Codex, models)
+        .await
+        .unwrap();
+    let command = session
+        .command(Path::new("codex"), &[], None, &RunOptions::default())
+        .unwrap();
+    assert!(
+        !command
+            .as_std()
+            .get_args()
+            .any(|arg| arg.to_string_lossy().starts_with("model_reasoning_effort="))
     );
 }

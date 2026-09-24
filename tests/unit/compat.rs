@@ -282,7 +282,8 @@ fn plaintext_agent_messages_translate_but_encrypted_messages_fail() {
 fn unsupported_content_and_name_collisions_fail_before_inference() {
     let mut body = request();
     body["input"][2]["content"] = json!([{"type":"input_image","image_url":"data:private"}]);
-    assert!(Compatibility::prepare(&body).is_err());
+    let (prepared, _) = Compatibility::prepare(&body).unwrap();
+    assert!(!crate::request::audit_request(&prepared).is_empty());
     let mut body = request();
     body["tools"] = json!([{"type":"function","name":"functions__exec","parameters":{}}]);
     assert!(Compatibility::prepare(&body).is_err());
@@ -292,7 +293,9 @@ fn unsupported_content_and_name_collisions_fail_before_inference() {
         json!({"input":[1]}),
         json!({"input":"hello","tools":[null]}),
     ] {
-        assert!(Compatibility::prepare(&body).is_err());
+        if let Ok((prepared, _)) = Compatibility::prepare(&body) {
+            assert!(!crate::request::audit_request(&prepared).is_empty());
+        }
     }
     let mut body = request();
     body["tools"] = json!([{"type":"web_search"}]);

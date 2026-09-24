@@ -71,18 +71,7 @@ pub struct Session {
 }
 
 impl Session {
-    pub async fn start(credentials: Credentials) -> Result<Self, &'static str> {
-        Self::start_with_mode(credentials, Mode::Strict).await
-    }
-
-    pub async fn start_with_mode(
-        credentials: Credentials,
-        mode: Mode,
-    ) -> Result<Self, &'static str> {
-        Self::start_with_models(credentials, mode, Models::default()).await
-    }
-
-    pub async fn start_with_models(
+    pub async fn start(
         credentials: Credentials,
         mode: Mode,
         models: Models,
@@ -99,8 +88,7 @@ impl Session {
                 .map_err(|_| "Cannot read listener address.")?
         );
         let token = random_token();
-        let router =
-            server::router_with_models(credentials, token.clone(), gateway, mode, models.clone());
+        let router = server::router(credentials, token.clone(), gateway, mode, models.clone());
         let (stop, stopped) = oneshot::channel();
         tokio::spawn(async move {
             let _ = axum::serve(listener, router)
@@ -218,10 +206,18 @@ impl Session {
                 .ok_or("Model is not in the selected Devin catalog.")?,
         };
         let selected = self.models.model(selected_model);
-        if let Some(effort) = options.reasoning_effort.as_deref()
-            && selected.is_some_and(|model| !model.variants.contains_key(effort))
-        {
-            return Err("Reasoning effort is unavailable for the selected Devin model.");
+        let effort = options.reasoning_effort.as_deref().or_else(|| {
+            selected
+                .filter(|model| model.variants.len() == 1)
+                .map(|model| model.default_effort())
+        });
+        if let Some(effort) = effort {
+            if !crate::compat::EFFORTS.contains(&effort) {
+                return Err("Unsupported reasoning effort.");
+            }
+            if selected.is_some_and(|model| !model.variants.contains_key(effort)) {
+                return Err("Reasoning effort is unavailable for the selected Devin model.");
+            }
         }
         for setting in [
             "model_provider=\"devin\"".to_owned(),
@@ -241,18 +237,10 @@ impl Session {
                 toml::Value::String(path.to_string_lossy().into_owned())
             ));
         }
-        if let Some(effort) = &options.reasoning_effort {
-            if !crate::compat::EFFORTS.contains(&effort.as_str()) {
-                return Err("Unsupported reasoning effort.");
-            }
+        if let Some(effort) = effort {
             command.arg("-c").arg(format!(
                 "model_reasoning_effort={}",
-                toml::Value::String(effort.clone())
-            ));
-        } else if selected.is_some_and(|model| model.variants.len() == 1) {
-            command.arg("-c").arg(format!(
-                "model_reasoning_effort={}",
-                toml::Value::String(selected.unwrap().default_effort().into())
+                toml::Value::String(effort.into())
             ));
         }
         if let Some(path) = &options.trust_project {
