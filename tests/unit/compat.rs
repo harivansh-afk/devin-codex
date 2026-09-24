@@ -190,6 +190,38 @@ fn collaboration_uses_codex_plaintext_dispatch_without_changing_other_tools() {
 }
 
 #[test]
+fn reasoning_envelope_preserves_identity_when_clients_omit_ids() {
+    let original =
+        json!({"type":"reasoning","id":"rs_original","encrypted_content":"opaque","summary":[]});
+    let (_, mapping) = Compatibility::prepare(&json!({"model":MODEL,"input":"hello"})).unwrap();
+    let mut event = json!({"item":original,"response":{"output":[original]}});
+    mapping.restore(&mut event);
+    assert_eq!(event["item"], event["response"]["output"][0]);
+    for omit_id in [false, true] {
+        let mut replay = event["item"].clone();
+        if omit_id {
+            replay.as_object_mut().unwrap().remove("id");
+        }
+        let (prepared, _) = Compatibility::prepare(
+            &json!({"model":MODEL,"input":[replay,{"role":"assistant","content":"done"}]}),
+        )
+        .unwrap();
+        assert_eq!(prepared["input"][0], original);
+    }
+    for invalid in [
+        json!(null),
+        json!({"id":"rs_original"}),
+        json!({"id":7,"encrypted_content":"opaque"}),
+    ] {
+        let mut replay = original.clone();
+        replay["encrypted_content"] = json!(format!("{REASONING_PREFIX}{invalid}"));
+        assert!(Compatibility::prepare(&json!({"model":MODEL,"input":[replay]})).is_err());
+    }
+    event["item"]["id"] = json!("rs_changed");
+    assert!(Compatibility::prepare(&json!({"model":MODEL,"input":[event["item"]]})).is_err());
+}
+
+#[test]
 fn interrupted_reasoning_keeps_an_empty_assistant_boundary() {
     let reasoning = json!({"type":"reasoning","encrypted_content":"opaque","summary":[]});
     for tail in [

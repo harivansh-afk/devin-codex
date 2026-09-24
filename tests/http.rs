@@ -270,7 +270,13 @@ async fn multiple_reasoning_items_sse_and_history_roundtrip() {
             .as_array()
             .unwrap()
             .clone();
-        assert_eq!(&input[..2], signature.as_array().unwrap());
+        if compatibility {
+            for item in &mut input[..2] {
+                item.as_object_mut().unwrap().remove("id");
+            }
+        } else {
+            assert_eq!(&input[..2], signature.as_array().unwrap());
+        }
         input.push(json!({"role":"user","content":"continue"}));
         let response = app
             .oneshot(request(json!({"model":"gpt-6-astra","input":input})))

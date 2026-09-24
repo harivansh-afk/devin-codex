@@ -15,6 +15,7 @@ pub const EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
 
 #[derive(Default)]
 pub struct Compatibility {
+    reasoning_envelope: bool,
     tools: ToolNames,
     model_alias: Option<String>,
 }
@@ -75,7 +76,10 @@ impl Compatibility {
         } else {
             models.model(alias).map(|model| model.slug.as_str())
         };
-        let mut this = Self::default();
+        let mut this = Self {
+            reasoning_envelope: true,
+            ..Self::default()
+        };
         if let Some(slug) = slug {
             this.model_alias = Some(alias.into());
             obj.insert("model".into(), json!(slug));
@@ -119,6 +123,7 @@ impl Compatibility {
             match item["type"].as_str().unwrap_or("message") {
                 "additional_tools" => continue,
                 "agent_message" => item = agent_message(&item)?,
+                "reasoning" => unwrap_reasoning(&mut item)?,
                 "message" => {
                     let content = text(&item["content"])?;
                     if matches!(item["role"].as_str(), Some("developer" | "system")) {
@@ -156,6 +161,9 @@ impl Compatibility {
             response.insert("model".into(), json!(alias));
         }
         if let Some(item) = event.get_mut("item") {
+            if self.reasoning_envelope {
+                wrap_reasoning(item);
+            }
             self.tools.restore_call(item);
         }
         if let Some(output) = event
@@ -164,10 +172,45 @@ impl Compatibility {
             .and_then(Value::as_array_mut)
         {
             for item in output {
+                if self.reasoning_envelope {
+                    wrap_reasoning(item);
+                }
                 self.tools.restore_call(item);
             }
         }
     }
+}
+
+const REASONING_PREFIX: &str = "devin-codex:reasoning:v1:";
+
+fn wrap_reasoning(item: &mut Value) {
+    if item["type"] == "reasoning" {
+        let payload = json!({"id":item["id"], "encrypted_content":item["encrypted_content"]});
+        item["encrypted_content"] = json!(format!("{REASONING_PREFIX}{payload}"));
+    }
+}
+
+fn unwrap_reasoning(item: &mut Value) -> Result<(), Vec<Problem>> {
+    let Some(payload) = item["encrypted_content"]
+        .as_str()
+        .and_then(|value| value.strip_prefix(REASONING_PREFIX))
+    else {
+        return Ok(());
+    };
+    let payload: Value = serde_json::from_str(payload)
+        .map_err(|_| problem("Malformed adapter reasoning envelope."))?;
+    if payload.as_object().is_none_or(|obj| obj.len() != 2)
+        || payload["id"].as_str().is_none_or(str::is_empty)
+        || payload["encrypted_content"]
+            .as_str()
+            .is_none_or(str::is_empty)
+        || item.get("id").is_some_and(|id| id != &payload["id"])
+    {
+        return Err(problem("Invalid adapter reasoning envelope identity."));
+    }
+    item["id"] = payload["id"].clone();
+    item["encrypted_content"] = payload["encrypted_content"].clone();
+    Ok(())
 }
 
 fn prepare_options(obj: &mut Map<String, Value>) -> Result<(), Vec<Problem>> {

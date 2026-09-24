@@ -148,3 +148,11 @@ Tests use fake gateways. `devin-codex test` makes two live inference calls witho
 executing generated code. `audit request.json` checks the strict API subset.
 `serve --token-file PATH` serves that subset; add `--compatibility` for Codex
 translation. Create a private token file with `devin-codex token PATH`.
+
+Responses clients such as Hermes can use the standalone server in compatibility
+mode. This mode carries the original gateway reasoning ID alongside its sealed
+content in a versioned opaque replay envelope: clients may omit the top-level
+reasoning ID without losing it on the next request. Existing unwrapped histories
+with their original IDs remain supported. The envelope is transport metadata,
+not additional encryption. The standalone server currently supports Astra only;
+the interactive launcher discovers the wider model catalog.
