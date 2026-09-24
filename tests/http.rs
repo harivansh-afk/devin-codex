@@ -126,7 +126,7 @@ async fn app_with_models(
     };
     let gateway = GatewayClient::new(&endpoint, &credentials.api_key).unwrap();
     (
-        server::router_with_models(
+        server::router(
             credentials,
             TOKEN.into(),
             gateway,
@@ -499,6 +499,8 @@ async fn stream_failures_preserve_safe_causes_without_partial_output() {
             credentials,
             TOKEN.into(),
             GatewayClient::new(&endpoint, "test-key").unwrap(),
+            Mode::Strict,
+            Models::default(),
         );
         for streaming in [true, false] {
             let response = app.clone().oneshot(request(json!({"model":"gpt-6-astra","input":"hello","stream":streaming,"tools":[{"type":"function","name":"run","parameters":{"type":"object"}}]}))).await.unwrap();
@@ -612,6 +614,8 @@ async fn dropping_downstream_sse_cancels_gateway_response() {
         credentials,
         TOKEN.into(),
         GatewayClient::new(&endpoint, "test-key").unwrap(),
+        Mode::Strict,
+        Models::default(),
     );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}/v1/responses", listener.local_addr().unwrap());

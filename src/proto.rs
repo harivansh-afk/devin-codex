@@ -88,6 +88,15 @@ pub struct ToolCall {
     pub is_custom_tool_call: Option<bool>,
 }
 #[derive(Clone, PartialEq, Message)]
+pub struct ImageData {
+    #[prost(string, tag = "1")]
+    pub base64_data: String,
+    #[prost(string, tag = "2")]
+    pub mime_type: String,
+    #[prost(string, tag = "3")]
+    pub caption: String,
+}
+#[derive(Clone, PartialEq, Message)]
 pub struct ChatMessage {
     #[prost(string, tag = "1")]
     pub id: String,
@@ -99,6 +108,8 @@ pub struct ChatMessage {
     pub tool_calls: Vec<ToolCall>,
     #[prost(string, tag = "7")]
     pub tool_call_id: String,
+    #[prost(message, repeated, tag = "10")]
+    pub images: Vec<ImageData>,
     #[prost(string, tag = "12")]
     pub reasoning: String,
     #[prost(string, tag = "18")]

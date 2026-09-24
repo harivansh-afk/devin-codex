@@ -43,7 +43,7 @@ fn catalog_preserves_harness_and_only_advertises_supported_options() {
     }
     assert_eq!(model["service_tiers"], json!([]));
     assert_eq!(model["additional_speed_tiers"], json!([]));
-    assert_eq!(model["input_modalities"], json!(["text"]));
+    assert_eq!(model["input_modalities"], json!(["text", "image"]));
     let sol = &value["models"][0];
     assert_eq!(sol["slug"], "devin-gpt-6-sol");
     assert_eq!(

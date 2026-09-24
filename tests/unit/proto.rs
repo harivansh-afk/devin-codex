@@ -18,3 +18,19 @@ fn malformed_protobuf_rejected() {
         assert!(ChatResponse::decode(input).is_err());
     }
 }
+
+#[test]
+fn official_image_field_numbers_encode_exactly() {
+    let message = ChatMessage {
+        images: vec![ImageData {
+            base64_data: "AQID".into(),
+            mime_type: "image/png".into(),
+            caption: String::new(),
+        }],
+        ..Default::default()
+    };
+    assert_eq!(
+        message.encode_to_vec(),
+        b"\x52\x11\x0a\x04AQID\x12\x09image/png"
+    );
+}

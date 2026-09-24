@@ -28,20 +28,7 @@ struct AppState {
     adapter: Adapter,
 }
 
-pub fn router(credentials: Credentials, token: String, gateway: GatewayClient) -> Router {
-    router_with_mode(credentials, token, gateway, Mode::Strict)
-}
-
-pub fn router_with_mode(
-    credentials: Credentials,
-    token: String,
-    gateway: GatewayClient,
-    mode: Mode,
-) -> Router {
-    router_with_models(credentials, token, gateway, mode, Models::default())
-}
-
-pub fn router_with_models(
+pub fn router(
     credentials: Credentials,
     token: String,
     gateway: GatewayClient,
@@ -158,9 +145,9 @@ fn decode_body(raw: Bytes, compressed: bool) -> Result<Value, (StatusCode, &'sta
                 "Decoded request exceeds size limit.",
             ));
         }
-        data
+        Bytes::from(data)
     } else {
-        raw.to_vec()
+        raw
     };
     serde_json::from_slice(&data)
         .map_err(|_| (StatusCode::BAD_REQUEST, "Request must be valid JSON."))

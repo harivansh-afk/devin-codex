@@ -1,6 +1,6 @@
 //! Explicitly lossy Codex normalization before strict request validation.
-use crate::models::Models;
 use crate::request::Problem;
+use crate::{content::Content, models::Models};
 use serde_json::{Map, Value, json};
 
 mod tools;
@@ -28,26 +28,7 @@ fn problem(reason: &str) -> Vec<Problem> {
 }
 
 fn text(value: &Value) -> Result<String, Vec<Problem>> {
-    if let Some(text) = value.as_str() {
-        return Ok(text.into());
-    }
-    value
-        .as_array()
-        .ok_or_else(|| problem("Expected text content."))?
-        .iter()
-        .map(|p| {
-            if !matches!(p["type"].as_str(), Some("input_text" | "output_text")) {
-                return Err(problem(
-                    "Images and non-text content are not supported yet.",
-                ));
-            }
-            p["text"]
-                .as_str()
-                .map(str::to_owned)
-                .ok_or_else(|| problem("Expected text part."))
-        })
-        .collect::<Result<Vec<_>, _>>()
-        .map(|parts| parts.join("\n\n"))
+    Content::text_only(value).map_err(problem)
 }
 
 fn close_reasoning_turn(input: &mut Vec<Value>) {
@@ -125,20 +106,16 @@ impl Compatibility {
                 "agent_message" => item = agent_message(&item)?,
                 "reasoning" => unwrap_reasoning(&mut item)?,
                 "message" => {
-                    let content = text(&item["content"])?;
                     if matches!(item["role"].as_str(), Some("developer" | "system")) {
+                        let content = text(&item["content"])?;
                         let role = item["role"].as_str().unwrap();
                         instructions.push_str(&format!(
                             "\n\n<{role} message_index=\"{index}\">\n{content}\n</{role}>"
                         ));
                         continue;
                     }
-                    item["content"] = json!(content);
                 }
                 "function_call" | "custom_tool_call" => this.tools.prepare_call(&mut item)?,
-                "function_call_output" | "custom_tool_call_output" if item["output"].is_array() => {
-                    item["output"] = json!(text(&item["output"])?);
-                }
                 _ => {}
             }
             if item["role"] == "user" {

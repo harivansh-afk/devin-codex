@@ -1,5 +1,6 @@
 use super::{Problem, history, tools};
 use crate::models::Models;
+use crate::proto;
 use serde_json::{Map, Value, json};
 
 pub(super) fn bad(out: &mut Vec<Problem>, path: impl Into<String>, reason: &str) {
@@ -52,14 +53,17 @@ pub(super) fn nonempty(value: Option<&Value>) -> bool {
 }
 
 pub fn audit_request(body: &Value) -> Vec<Problem> {
-    audit_with_models(body, &Models::default())
+    parse(body, &Models::default()).err().unwrap_or_default()
 }
 
-pub(super) fn audit_with_models(body: &Value, models: &Models) -> Vec<Problem> {
+pub(super) fn parse(
+    body: &Value,
+    models: &Models,
+) -> Result<Vec<proto::ChatMessage>, Vec<Problem>> {
     let mut out = Vec::new();
     let Some(obj) = body.as_object() else {
         bad(&mut out, "$", "Expected a JSON object.");
-        return out;
+        return Err(out);
     };
     unknown(
         &mut out,
@@ -178,10 +182,22 @@ pub(super) fn audit_with_models(body: &Value, models: &Models) -> Vec<Problem> {
         );
     }
     let tool_types = tools::audit(obj.get("tools"), &mut out);
-    match obj.get("input") {
-        Some(Value::String(_)) => {}
-        Some(Value::Array(items)) => history::audit(items, &tool_types, &mut out),
-        _ => bad(&mut out, "input", "Expected text or an input array."),
+    let messages = match obj.get("input") {
+        Some(Value::String(text)) => vec![proto::ChatMessage {
+            id: uuid::Uuid::new_v4().to_string(),
+            role: 1,
+            content: text.clone(),
+            ..Default::default()
+        }],
+        Some(Value::Array(items)) => history::parse(items, &tool_types, &mut out),
+        _ => {
+            bad(&mut out, "input", "Expected text or an input array.");
+            Vec::new()
+        }
+    };
+    if out.is_empty() {
+        Ok(messages)
+    } else {
+        Err(out)
     }
-    out
 }
