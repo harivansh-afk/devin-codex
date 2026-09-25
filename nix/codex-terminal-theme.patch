@@ -1,0 +1,602 @@
+diff --git a/tui/src/app.rs b/tui/src/app.rs
+index e7140a6..a49c8fc 100644
+--- a/tui/src/app.rs
++++ b/tui/src/app.rs
+@@ -847,6 +847,17 @@ impl App {
+         {
+             return Ok(AppRunControl::Exit(ExitReason::UserRequested));
+         }
++        if matches!(event, TuiEvent::TerminalPaletteChanged) {
++            if self.local_settings.tui.theme.is_none()
++                && self.overlay.is_none()
++                && !self.chat_widget.has_active_view()
++            {
++                self.restore_runtime_theme_from_config();
++            }
++            self.refresh_status_line();
++            tui.clear_pending_history_lines();
++            self.schedule_immediate_resize_reflow(tui);
++        }
+         let screen_size = tui.screen_size_for_event(&event)?;
+         if !matches!(
+             &event,
+@@ -929,7 +940,11 @@ impl App {
+                         ));
+                     }
+                 }
+-                TuiEvent::Draw | TuiEvent::Resume | TuiEvent::Resize(_) | TuiEvent::FocusGained => {
++                TuiEvent::Draw
++                | TuiEvent::TerminalPaletteChanged
++                | TuiEvent::Resume
++                | TuiEvent::Resize(_)
++                | TuiEvent::FocusGained => {
+                     if self.backtrack_render_pending {
+                         self.rebuild_transcript_after_backtrack(tui, screen_size.into())?;
+                         self.backtrack_render_pending = false;
+diff --git a/tui/src/app_backtrack.rs b/tui/src/app_backtrack.rs
+index 242b021..3ec0650 100644
+--- a/tui/src/app_backtrack.rs
++++ b/tui/src/app_backtrack.rs
+@@ -306,7 +306,11 @@ impl App {
+     fn overlay_forward_event(&mut self, tui: &mut tui::Tui, event: TuiEvent) -> Result<()> {
+         if matches!(
+             &event,
+-            TuiEvent::Draw | TuiEvent::Resume | TuiEvent::Resize(_) | TuiEvent::FocusGained
++            TuiEvent::Draw
++                | TuiEvent::TerminalPaletteChanged
++                | TuiEvent::Resume
++                | TuiEvent::Resize(_)
++                | TuiEvent::FocusGained
+         ) && let Some(Overlay::Transcript(t)) = &mut self.overlay
+         {
+             let active_key = self.chat_widget.active_cell_transcript_key();
+diff --git a/tui/src/cwd_prompt.rs b/tui/src/cwd_prompt.rs
+index b0d6205..355d003 100644
+--- a/tui/src/cwd_prompt.rs
++++ b/tui/src/cwd_prompt.rs
+@@ -135,7 +135,11 @@ pub(crate) async fn run_cwd_selection_prompt(
+             match event {
+                 TuiEvent::Key(key_event) => screen.handle_key(key_event),
+                 TuiEvent::Paste(_) | TuiEvent::FocusLost => {}
+-                TuiEvent::Draw | TuiEvent::Resume | TuiEvent::Resize(_) | TuiEvent::FocusGained => {
++                TuiEvent::Draw
++                | TuiEvent::TerminalPaletteChanged
++                | TuiEvent::Resume
++                | TuiEvent::Resize(_)
++                | TuiEvent::FocusGained => {
+                     tui.draw(u16::MAX, |frame| {
+                         frame.render_widget_ref(&screen, frame.area());
+                     })?;
+diff --git a/tui/src/external_agent_config_migration/mod.rs b/tui/src/external_agent_config_migration/mod.rs
+index a80fe03..9d6ca6a 100644
+--- a/tui/src/external_agent_config_migration/mod.rs
++++ b/tui/src/external_agent_config_migration/mod.rs
+@@ -109,7 +109,11 @@ pub(crate) async fn run_external_agent_config_migration_prompt(
+             match event {
+                 TuiEvent::Key(key_event) => screen.handle_key(key_event),
+                 TuiEvent::Paste(_) | TuiEvent::FocusLost => {}
+-                TuiEvent::Draw | TuiEvent::Resume | TuiEvent::Resize(_) | TuiEvent::FocusGained => {
++                TuiEvent::Draw
++                | TuiEvent::TerminalPaletteChanged
++                | TuiEvent::Resume
++                | TuiEvent::Resize(_)
++                | TuiEvent::FocusGained => {
+                     let _ = tui.draw(u16::MAX, |frame| {
+                         frame.render_widget_ref(&screen, frame.area());
+                     });
+diff --git a/tui/src/external_agent_config_migration/source.rs b/tui/src/external_agent_config_migration/source.rs
+index bc01ad7..143a335 100644
+--- a/tui/src/external_agent_config_migration/source.rs
++++ b/tui/src/external_agent_config_migration/source.rs
+@@ -66,7 +66,11 @@ pub(crate) async fn run_external_agent_config_source_prompt(
+             match event {
+                 TuiEvent::Key(key_event) => screen.handle_key(key_event),
+                 TuiEvent::Paste(_) | TuiEvent::FocusLost => {}
+-                TuiEvent::Draw | TuiEvent::Resume | TuiEvent::Resize(_) | TuiEvent::FocusGained => {
++                TuiEvent::Draw
++                | TuiEvent::TerminalPaletteChanged
++                | TuiEvent::Resume
++                | TuiEvent::Resize(_)
++                | TuiEvent::FocusGained => {
+                     let _ = tui.draw(u16::MAX, |frame| {
+                         frame.render_widget_ref(&screen, frame.area());
+                     });
+diff --git a/tui/src/model_migration.rs b/tui/src/model_migration.rs
+index 094fb73..cc02cb3 100644
+--- a/tui/src/model_migration.rs
++++ b/tui/src/model_migration.rs
+@@ -155,7 +155,11 @@ pub(crate) async fn run_model_migration_prompt(
+             match event {
+                 TuiEvent::Key(key_event) => screen.handle_key(key_event),
+                 TuiEvent::Paste(_) | TuiEvent::FocusLost => {}
+-                TuiEvent::Draw | TuiEvent::Resume | TuiEvent::Resize(_) | TuiEvent::FocusGained => {
++                TuiEvent::Draw
++                | TuiEvent::TerminalPaletteChanged
++                | TuiEvent::Resume
++                | TuiEvent::Resize(_)
++                | TuiEvent::FocusGained => {
+                     let _ = alt.tui.draw(u16::MAX, |frame| {
+                         frame.render_widget_ref(&screen, frame.area());
+                     });
+diff --git a/tui/src/onboarding/onboarding_screen.rs b/tui/src/onboarding/onboarding_screen.rs
+index 756e231..5b04dab 100644
+--- a/tui/src/onboarding/onboarding_screen.rs
++++ b/tui/src/onboarding/onboarding_screen.rs
+@@ -542,7 +542,7 @@ pub(crate) async fn run_onboarding_app(
+                         TuiEvent::Paste(text) => {
+                             onboarding_screen.handle_paste(text);
+                         }
+-                        TuiEvent::Draw
++                        TuiEvent::Draw | TuiEvent::TerminalPaletteChanged
+                         | TuiEvent::Resume
+                         | TuiEvent::Resize(_)
+                         | TuiEvent::FocusGained => {
+diff --git a/tui/src/pager_overlay.rs b/tui/src/pager_overlay.rs
+index 9b6c763..d157e0c 100644
+--- a/tui/src/pager_overlay.rs
++++ b/tui/src/pager_overlay.rs
+@@ -944,7 +944,11 @@ impl TranscriptOverlay {
+                 }
+                 other => self.view.handle_key_event(tui, other),
+             },
+-            TuiEvent::Draw | TuiEvent::Resume | TuiEvent::Resize(_) | TuiEvent::FocusGained => {
++            TuiEvent::Draw
++            | TuiEvent::TerminalPaletteChanged
++            | TuiEvent::Resume
++            | TuiEvent::Resize(_)
++            | TuiEvent::FocusGained => {
+                 tui.draw(u16::MAX, |frame| {
+                     self.render(frame.area(), frame.buffer);
+                 })?;
+@@ -1018,7 +1022,11 @@ impl StaticOverlay {
+                 }
+                 other => self.view.handle_key_event(tui, other),
+             },
+-            TuiEvent::Draw | TuiEvent::Resume | TuiEvent::Resize(_) | TuiEvent::FocusGained => {
++            TuiEvent::Draw
++            | TuiEvent::TerminalPaletteChanged
++            | TuiEvent::Resume
++            | TuiEvent::Resize(_)
++            | TuiEvent::FocusGained => {
+                 tui.draw(u16::MAX, |frame| {
+                     self.render(frame.area(), frame.buffer);
+                 })?;
+diff --git a/tui/src/resume_picker.rs b/tui/src/resume_picker.rs
+index ef4dd6d..5d23776 100644
+--- a/tui/src/resume_picker.rs
++++ b/tui/src/resume_picker.rs
+@@ -610,7 +610,7 @@ async fn run_session_picker_with_loader(
+                     TuiEvent::Paste(pasted) => {
+                         state.handle_paste(pasted);
+                     }
+-                    TuiEvent::Draw | TuiEvent::Resume | TuiEvent::Resize(_) | TuiEvent::FocusGained => {
++                    TuiEvent::Draw | TuiEvent::TerminalPaletteChanged | TuiEvent::Resume | TuiEvent::Resize(_) | TuiEvent::FocusGained => {
+                         let list_width = list_viewport_width(screen_size.width);
+                         let list_height =
+                             usize::from(screen_size.height.saturating_sub(PICKER_CHROME_HEIGHT));
+diff --git a/tui/src/startup_draft.rs b/tui/src/startup_draft.rs
+index 4c3dbe0..09bdf7b 100644
+--- a/tui/src/startup_draft.rs
++++ b/tui/src/startup_draft.rs
+@@ -305,7 +305,11 @@ impl StartupDraftPump {
+                     return Ok(());
+                 }
+                 TuiEvent::Paste(text) => !text.is_empty(),
+-                TuiEvent::Draw | TuiEvent::Resize(_) | TuiEvent::Resume | TuiEvent::FocusGained => {
++                TuiEvent::Draw
++                | TuiEvent::TerminalPaletteChanged
++                | TuiEvent::Resize(_)
++                | TuiEvent::Resume
++                | TuiEvent::FocusGained => {
+                     self.pending_paste_newline = Some((started_at, newlines));
+                     if self.initial_screen == StartupDraftInitialScreen::Composer {
+                         self.draw(tui, screen_size)?;
+@@ -363,7 +367,11 @@ impl StartupDraftPump {
+                     self.bottom_pane.handle_paste(text);
+                 }
+             }
+-            TuiEvent::Draw | TuiEvent::Resize(_) | TuiEvent::Resume | TuiEvent::FocusGained => {}
++            TuiEvent::Draw
++            | TuiEvent::TerminalPaletteChanged
++            | TuiEvent::Resize(_)
++            | TuiEvent::Resume
++            | TuiEvent::FocusGained => {}
+             TuiEvent::FocusLost => return Ok(()),
+         }
+         if self.initial_screen == StartupDraftInitialScreen::Composer {
+diff --git a/tui/src/startup_hooks_review.rs b/tui/src/startup_hooks_review.rs
+index 002e58b..32c36cf 100644
+--- a/tui/src/startup_hooks_review.rs
++++ b/tui/src/startup_hooks_review.rs
+@@ -183,7 +183,11 @@ async fn run_startup_hooks_review_app(
+                 }
+             }
+             TuiEvent::Paste(_) | TuiEvent::FocusLost => {}
+-            TuiEvent::Draw | TuiEvent::Resume | TuiEvent::Resize(_) | TuiEvent::FocusGained => {
++            TuiEvent::Draw
++            | TuiEvent::TerminalPaletteChanged
++            | TuiEvent::Resume
++            | TuiEvent::Resize(_)
++            | TuiEvent::FocusGained => {
+                 draw_view(tui, &view)?;
+             }
+         }
+diff --git a/tui/src/terminal_palette.rs b/tui/src/terminal_palette.rs
+index 9c4b4eb..5973f80 100644
+--- a/tui/src/terminal_palette.rs
++++ b/tui/src/terminal_palette.rs
+@@ -90,8 +90,8 @@ fn best_color_for_color_level(target: (u8, u8, u8), color_level: StdoutColorLeve
+
+ #[derive(Clone, Copy)]
+ pub struct DefaultColors {
+-    fg: (u8, u8, u8),
+-    bg: (u8, u8, u8),
++    fg: Option<(u8, u8, u8)>,
++    bg: Option<(u8, u8, u8)>,
+ }
+
+ #[cfg(test)]
+@@ -118,8 +118,8 @@ pub(crate) fn with_test_default_colors<T>(
+ ) -> T {
+     TEST_DEFAULT_COLORS.with(|override_colors| {
+         let previous = override_colors.replace(Some(DefaultColors {
+-            fg: colors.fg,
+-            bg: colors.bg,
++            fg: Some(colors.fg),
++            bg: Some(colors.bg),
+         }));
+         let result = render();
+         override_colors.set(previous);
+@@ -128,11 +128,37 @@ pub(crate) fn with_test_default_colors<T>(
+ }
+
+ pub fn default_fg() -> Option<(u8, u8, u8)> {
+-    default_colors().map(|c| c.fg)
++    default_colors().and_then(|c| c.fg)
+ }
+
+ pub fn default_bg() -> Option<(u8, u8, u8)> {
+-    default_colors().map(|c| c.bg)
++    default_colors().and_then(|c| c.bg)
++}
++
++/// Update a terminal color without reading stdin or waiting for another response.
++pub(crate) fn update_default_color(slot: u8, rgb: (u8, u8, u8)) -> bool {
++    #[cfg(test)]
++    return TEST_DEFAULT_COLORS.with(|colors| {
++        let mut value = colors.get();
++        let changed = update_color(&mut value, slot, rgb);
++        colors.set(value);
++        changed
++    });
++    #[cfg(not(test))]
++    imp::update_default_color(slot, rgb)
++}
++
++fn update_color(value: &mut Option<DefaultColors>, slot: u8, rgb: (u8, u8, u8)) -> bool {
++    if !matches!(slot, 10 | 11) {
++        return false;
++    }
++    let colors = value.get_or_insert(DefaultColors { fg: None, bg: None });
++    let color = if slot == 10 {
++        &mut colors.fg
++    } else {
++        &mut colors.bg
++    };
++    color.replace(rgb) != Some(rgb)
+ }
+
+ #[cfg(any(unix, windows))]
+@@ -183,13 +209,22 @@ mod imp {
+         cache.get_or_init_with(query_default_colors)
+     }
+
++    #[cfg(not(test))]
++    pub(super) fn update_default_color(slot: u8, rgb: (u8, u8, u8)) -> bool {
++        let Ok(mut cache) = default_colors_cache().lock() else {
++            return false;
++        };
++        cache.attempted = true;
++        super::update_color(&mut cache.value, slot, rgb)
++    }
++
+     pub(super) fn set_default_colors_from_startup_probe(
+         colors: Option<crate::terminal_probe::DefaultColors>,
+     ) {
+         if let Ok(mut cache) = default_colors_cache().lock() {
+             cache.value = colors.map(|colors| DefaultColors {
+-                fg: colors.fg,
+-                bg: colors.bg,
++                fg: Some(colors.fg),
++                bg: Some(colors.bg),
+             });
+             cache.attempted = true;
+         }
+@@ -205,8 +240,8 @@ mod imp {
+             .ok()
+             .flatten()
+             .map(|colors| DefaultColors {
+-                fg: colors.fg,
+-                bg: colors.bg,
++                fg: Some(colors.fg),
++                bg: Some(colors.bg),
+             })
+     }
+ }
+@@ -252,13 +287,22 @@ mod imp {
+         cache.get_or_init_with(query_default_colors)
+     }
+
++    #[cfg(not(test))]
++    pub(super) fn update_default_color(slot: u8, rgb: (u8, u8, u8)) -> bool {
++        let Ok(mut cache) = default_colors_cache().lock() else {
++            return false;
++        };
++        cache.attempted = true;
++        super::update_color(&mut cache.value, slot, rgb)
++    }
++
+     pub(super) fn set_default_colors_from_startup_probe(
+         colors: Option<crate::terminal_probe::DefaultColors>,
+     ) {
+         if let Ok(mut cache) = default_colors_cache().lock() {
+             cache.value = colors.map(|colors| DefaultColors {
+-                fg: colors.fg,
+-                bg: colors.bg,
++                fg: Some(colors.fg),
++                bg: Some(colors.bg),
+             });
+             cache.attempted = true;
+         }
+@@ -269,8 +313,8 @@ mod imp {
+             .ok()
+             .flatten()
+             .map(|colors| DefaultColors {
+-                fg: colors.fg,
+-                bg: colors.bg,
++                fg: Some(colors.fg),
++                bg: Some(colors.bg),
+             })
+     }
+ }
+@@ -283,6 +327,11 @@ mod imp {
+         None
+     }
+
++    #[cfg(not(test))]
++    pub(super) fn update_default_color(_slot: u8, _rgb: (u8, u8, u8)) -> bool {
++        false
++    }
++
+     #[cfg(any(unix, windows))]
+     pub(super) fn set_default_colors_from_startup_probe(
+         _colors: Option<crate::terminal_probe::DefaultColors>,
+@@ -563,6 +612,42 @@ mod tests {
+     use super::*;
+     use pretty_assertions::assert_eq;
+
++    #[test]
++    fn live_colors_repaint_message_backgrounds() {
++        with_test_default_colors(
++            crate::terminal_probe::DefaultColors {
++                fg: (224, 224, 224),
++                bg: (18, 18, 18),
++            },
++            || {
++                let mut backgrounds = Vec::new();
++                for rgb in [(245, 245, 245), (18, 18, 18)] {
++                    update_default_color(11, rgb);
++                    backgrounds.push(format!("{:?}", crate::style::user_message_style().bg));
++                }
++                insta::assert_snapshot!(backgrounds.join("\n"), @r"
++                Some(Rgb(235, 235, 235))
++                Some(Rgb(46, 46, 46))
++                ");
++            },
++        );
++    }
++
++    #[test]
++    fn live_colors_accept_partial_replies_and_ignore_duplicates() {
++        let mut colors = None;
++        assert!(!update_color(&mut colors, 12, (1, 2, 3)));
++        assert!(colors.is_none());
++        assert!(update_color(&mut colors, 11, (245, 245, 245)));
++        assert_eq!(colors.unwrap().bg, Some((245, 245, 245)));
++        assert_eq!(colors.unwrap().fg, None);
++        assert!(!update_color(&mut colors, 11, (245, 245, 245)));
++        assert!(update_color(&mut colors, 10, (26, 26, 26)));
++        assert!(update_color(&mut colors, 11, (18, 18, 18)));
++        assert_eq!(colors.unwrap().fg, Some((26, 26, 26)));
++        assert_eq!(colors.unwrap().bg, Some((18, 18, 18)));
++    }
++
+     #[test]
+     fn best_color_uses_truecolor_without_quantization() {
+         assert_eq!(
+diff --git a/tui/src/tui.rs b/tui/src/tui.rs
+index 96b3fbc..b6b8184 100644
+--- a/tui/src/tui.rs
++++ b/tui/src/tui.rs
+@@ -244,6 +244,8 @@ pub fn set_modes() -> Result<()> {
+     let _ = execute!(stdout(), EnableFocusChange);
+     #[cfg(windows)]
+     let _ = execute!(stdout(), DisableFocusChange);
++    stdout().write_all(b"\x1b[?2031h")?;
++    stdout().flush()?;
+     Ok(())
+ }
+
+@@ -316,6 +318,8 @@ fn restore_common(
+         first_error.get_or_insert(err);
+     }
+     let _ = execute!(stdout(), DisableFocusChange);
++    let _ = stdout().write_all(b"\x1b[?2031l");
++    let _ = stdout().flush();
+     if matches!(raw_mode_restore, RawModeRestore::Disable)
+         && let Err(err) = disable_raw_mode()
+     {
+@@ -571,6 +575,8 @@ pub enum TuiEvent {
+     Resize(Size),
+     /// A scheduled repaint that does not necessarily correspond to a terminal size change.
+     Draw,
++    /// Terminal default colors changed after a nonblocking OSC response.
++    TerminalPaletteChanged,
+     /// The first repaint after returning from process suspension.
+     ///
+     /// The app refreshes terminal geometry for this draw because resize events are not delivered
+diff --git a/tui/src/tui/event_stream.rs b/tui/src/tui/event_stream.rs
+index de4ceae..f5e2c66 100644
+--- a/tui/src/tui/event_stream.rs
++++ b/tui/src/tui/event_stream.rs
+@@ -17,6 +17,7 @@
+ //!
+ //! See https://ratatui.rs/recipes/apps/spawn-vim/ and https://www.reddit.com/r/rust/comments/1f3o33u/myterious_crossterm_input_after_running_vim for more details.
+
++use std::io::Write;
+ use std::pin::Pin;
+ use std::sync::Arc;
+ use std::sync::Mutex;
+@@ -273,10 +274,17 @@ impl<S: EventSource + Default + Unpin> TuiEventStream<S> {
+             Event::Paste(pasted) => Some(TuiEvent::Paste(pasted)),
+             Event::FocusGained => {
+                 self.terminal_focused.store(true, Ordering::Relaxed);
+-                // Keep the startup-cached palette: querying terminal colors here blocks the
+-                // input loop, and a direct probe would discard keys typed during the refresh.
++                request_terminal_colors();
+                 Some(TuiEvent::FocusGained)
+             }
++            Event::ColorSchemeChanged => {
++                request_terminal_colors();
++                None
++            }
++            Event::TerminalColor { slot, rgb } => {
++                crate::terminal_palette::update_default_color(slot, rgb)
++                    .then_some(TuiEvent::TerminalPaletteChanged)
++            }
+             Event::FocusLost => {
+                 self.terminal_focused.store(false, Ordering::Relaxed);
+                 Some(TuiEvent::FocusLost)
+@@ -286,6 +294,13 @@ impl<S: EventSource + Default + Unpin> TuiEventStream<S> {
+     }
+ }
+
++/// Let the existing event reader receive replies without a second stdin consumer.
++fn request_terminal_colors() {
++    let mut output = std::io::stdout().lock();
++    let _ = output.write_all(b"\x1b]10;?\x1b\\\x1b]11;?\x1b\\");
++    let _ = output.flush();
++}
++
+ impl<S: EventSource + Default + Unpin> Unpin for TuiEventStream<S> {}
+
+ impl<S: EventSource + Default + Unpin> Stream for TuiEventStream<S> {
+@@ -469,6 +484,31 @@ mod tests {
+         assert!(!tui.is_terminal_focused());
+     }
+
++    #[tokio::test(flavor = "current_thread")]
++    async fn theme_notification_preserves_input_while_waiting_for_colors() {
++        let (broker, handle, _draw_tx, draw_rx, terminal_focused) = setup();
++        let mut stream = make_stream(broker, draw_rx, terminal_focused);
++        let key = KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE);
++        handle.send(Ok(Event::ColorSchemeChanged));
++        handle.send(Ok(Event::Key(key)));
++        handle.send(Ok(Event::TerminalColor {
++            slot: 11,
++            rgb: (245, 245, 245),
++        }));
++        assert!(matches!(stream.next().await, Some(TuiEvent::Key(event)) if event == key));
++        assert!(matches!(
++            stream.next().await,
++            Some(TuiEvent::TerminalPaletteChanged)
++        ));
++        assert_eq!(crate::terminal_palette::default_bg(), Some((245, 245, 245)));
++        handle.send(Ok(Event::TerminalColor {
++            slot: 11,
++            rgb: (245, 245, 245),
++        }));
++        handle.send(Ok(Event::Key(key)));
++        assert!(matches!(stream.next().await, Some(TuiEvent::Key(event)) if event == key));
++    }
++
+     #[tokio::test(flavor = "current_thread")]
+     async fn focus_gained_preserves_already_queued_key() {
+         let (broker, handle, _draw_tx, draw_rx, terminal_focused) = setup();
+diff --git a/tui/src/tui/screen_size.rs b/tui/src/tui/screen_size.rs
+index c9f6578..b32bc31 100644
+--- a/tui/src/tui/screen_size.rs
++++ b/tui/src/tui/screen_size.rs
+@@ -22,8 +22,10 @@ impl Tui {
+     pub(crate) fn screen_size_for_event(&mut self, event: &TuiEvent) -> io::Result<Size> {
+         if matches!(event, TuiEvent::Resize(_)) {
+             self.schedule_screen_size_recheck(TRANSCRIPT_REFLOW_DEBOUNCE);
+-        } else if matches!(event, TuiEvent::Draw | TuiEvent::FocusGained)
+-            && let Some(deadline) = self.screen_size.pending_recheck_at
++        } else if matches!(
++            event,
++            TuiEvent::Draw | TuiEvent::TerminalPaletteChanged | TuiEvent::FocusGained
++        ) && let Some(deadline) = self.screen_size.pending_recheck_at
+         {
+             let now = Instant::now();
+             if now < deadline {
+@@ -44,7 +46,7 @@ impl Tui {
+                 self.screen_size.deferred_size = None;
+                 self.terminal.size()?
+             }
+-            TuiEvent::Draw | TuiEvent::FocusGained => {
++            TuiEvent::Draw | TuiEvent::TerminalPaletteChanged | TuiEvent::FocusGained => {
+                 self.screen_size.deferred_size.take().unwrap_or(cached)
+             }
+             TuiEvent::Key(_) | TuiEvent::Paste(_) | TuiEvent::FocusLost => cached,
+diff --git a/tui/src/unarchive_prompt.rs b/tui/src/unarchive_prompt.rs
+index 3f51822..7ff4137 100644
+--- a/tui/src/unarchive_prompt.rs
++++ b/tui/src/unarchive_prompt.rs
+@@ -55,6 +55,7 @@ pub(crate) async fn run_unarchive_prompt(
+             }
+             TuiEvent::Paste(_)
+             | TuiEvent::Draw
++            | TuiEvent::TerminalPaletteChanged
+             | TuiEvent::Resize(_)
+             | TuiEvent::Resume
+             | TuiEvent::FocusGained => {}
+diff --git a/tui/src/update_prompt.rs b/tui/src/update_prompt.rs
+index 688d113..dc05da1 100644
+--- a/tui/src/update_prompt.rs
++++ b/tui/src/update_prompt.rs
+@@ -60,7 +60,11 @@ pub(crate) async fn run_update_prompt_if_needed(
+             match event {
+                 TuiEvent::Key(key_event) => screen.handle_key(key_event),
+                 TuiEvent::Paste(_) | TuiEvent::FocusLost => {}
+-                TuiEvent::Draw | TuiEvent::Resume | TuiEvent::Resize(_) | TuiEvent::FocusGained => {
++                TuiEvent::Draw
++                | TuiEvent::TerminalPaletteChanged
++                | TuiEvent::Resume
++                | TuiEvent::Resize(_)
++                | TuiEvent::FocusGained => {
+                     tui.draw(u16::MAX, |frame| {
+                         frame.render_widget_ref(&screen, frame.area());
+                     })?;
+diff --git a/tui/tests/suite/focus_palette.rs b/tui/tests/suite/focus_palette.rs
+index bdf5ade..0c0c3c9 100644
+--- a/tui/tests/suite/focus_palette.rs
++++ b/tui/tests/suite/focus_palette.rs
+@@ -261,12 +261,12 @@ impl PtyCodex {
+         while focus_started.elapsed() < FOCUS_INPUT_TIMEOUT {
+             self.read_output(Duration::from_millis(/*millis*/ 20))?;
+             let focus_output = &self.output[startup_output_len..];
+-            ensure!(
+-                !contains_bytes(focus_output, b"\x1b]10;?")
+-                    && !contains_bytes(focus_output, b"\x1b]11;?"),
+-                "focus regain queried terminal colors after the startup palette was cached",
+-            );
+             if self.screen_contains(input) {
++                ensure!(
++                    contains_bytes(focus_output, b"\x1b]10;?")
++                        && contains_bytes(focus_output, b"\x1b]11;?"),
++                    "focus regain did not request terminal colors",
++                );
+                 return Ok(());
+             }
+         }

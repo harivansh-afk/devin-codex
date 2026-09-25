@@ -1,0 +1,106 @@
+diff --git a/src/event.rs b/src/event.rs
+index 2728172..4f52abe 100644
+--- a/src/event.rs
++++ b/src/event.rs
+@@ -250,6 +250,14 @@ pub fn read() -> std::io::Result<Event> {
+     match read_internal(&EventFilter)? {
+         InternalEvent::Event(event) => Ok(event),
+         #[cfg(unix)]
++        InternalEvent::OscColor {
++            slot,
++            payload: OscColorPayload::Rgb { r, g, b },
++        } => Ok(Event::TerminalColor {
++            slot,
++            rgb: (r, g, b),
++        }),
++        #[cfg(unix)]
+         _ => unreachable!(),
+     }
+ }
+@@ -593,6 +601,10 @@ impl Command for PopKeyboardEnhancementFlags {
+ #[cfg_attr(not(feature = "bracketed-paste"), derive(Copy))]
+ #[derive(Debug, PartialOrd, PartialEq, Eq, Clone, Hash)]
+ pub enum Event {
++    /// The terminal reports a change through DEC mode 2031.
++    ColorSchemeChanged,
++    /// A terminal default color reported by OSC 10 or OSC 11.
++    TerminalColor { slot: u8, rgb: (u8, u8, u8) },
+     /// The terminal gained focus
+     FocusGained,
+     /// The terminal lost focus
+diff --git a/src/event/filter.rs b/src/event/filter.rs
+index 353ec76..ba6a7c4 100644
+--- a/src/event/filter.rs
++++ b/src/event/filter.rs
+@@ -68,7 +68,14 @@ pub(crate) struct EventFilter;
+ impl Filter for EventFilter {
+     #[cfg(unix)]
+     fn eval(&self, event: &InternalEvent) -> bool {
+-        matches!(*event, InternalEvent::Event(_))
++        matches!(
++            *event,
++            InternalEvent::Event(_)
++                | InternalEvent::OscColor {
++                    payload: crate::event::OscColorPayload::Rgb { .. },
++                    ..
++                }
++        )
+     }
+
+     #[cfg(windows)]
+diff --git a/src/event/stream.rs b/src/event/stream.rs
+index e74dcea..2317e5b 100644
+--- a/src/event/stream.rs
++++ b/src/event/stream.rs
+@@ -105,6 +105,14 @@ impl Stream for EventStream {
+         let result = match poll_internal(Some(Duration::from_secs(0)), &EventFilter) {
+             Ok(true) => match read_internal(&EventFilter) {
+                 Ok(InternalEvent::Event(event)) => Poll::Ready(Some(Ok(event))),
++                #[cfg(unix)]
++                Ok(InternalEvent::OscColor {
++                    slot,
++                    payload: crate::event::OscColorPayload::Rgb { r, g, b },
++                }) => Poll::Ready(Some(Ok(Event::TerminalColor {
++                    slot,
++                    rgb: (r, g, b),
++                }))),
+                 Err(e) => Poll::Ready(Some(Err(e))),
+                 #[cfg(unix)]
+                 _ => unreachable!(),
+diff --git a/src/event/sys/unix/parse.rs b/src/event/sys/unix/parse.rs
+index 0a14e33..37e01ce 100644
+--- a/src/event/sys/unix/parse.rs
++++ b/src/event/sys/unix/parse.rs
+@@ -231,6 +231,10 @@ pub(crate) fn parse_csi(buffer: &[u8]) -> io::Result<Option<InternalEvent>> {
+         b'?' => match buffer[buffer.len() - 1] {
+             b'u' => return parse_csi_keyboard_enhancement_flags(buffer),
+             b'c' => return parse_csi_primary_device_attributes(buffer),
++            b'n' if matches!(buffer, b"\x1b[?997;1n" | b"\x1b[?997;2n") => {
++                Some(Event::ColorSchemeChanged)
++            }
++            b'n' => return Err(could_not_parse_event_error()),
+             _ => None,
+         },
+         b'0'..=b'9' => {
+@@ -1064,6 +1068,21 @@ mod tests {
+         );
+     }
+
++    #[test]
++    fn color_scheme_notifications_wait_for_the_final_byte() {
++        for sequence in [b"\x1b[?997;1n", b"\x1b[?997;2n"] {
++            for end in 2..sequence.len() {
++                assert_eq!(parse_csi(&sequence[..end]).unwrap(), None);
++            }
++            assert_eq!(
++                parse_csi(sequence).unwrap(),
++                Some(InternalEvent::Event(Event::ColorSchemeChanged))
++            );
++        }
++        assert!(parse_csi(b"\x1b[?997;3n").is_err());
++        assert!(parse_csi(b"\x1b[?998;1n").is_err());
++    }
++
+     #[test]
+     fn test_parse_csi() {
+         assert_eq!(
