@@ -77,7 +77,8 @@ impl Session {
         models: Models,
     ) -> Result<Self, &'static str> {
         let gateway = GatewayClient::new(&credentials.endpoint, &credentials.api_key)
-            .map_err(|_| "Cannot configure gateway transport.")?;
+            .map_err(|_| "Cannot configure gateway transport.")?
+            .with_diagnostics();
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .map_err(|_| "Cannot bind loopback listener.")?;
@@ -219,6 +220,7 @@ impl Session {
                 return Err("Reasoning effort is unavailable for the selected Devin model.");
             }
         }
+        // The adapter retries whole buffered generations; disable nested Codex retries.
         for setting in [
             "model_provider=\"devin\"".to_owned(),
             format!("model={}", toml::Value::String(selected_model.into())),

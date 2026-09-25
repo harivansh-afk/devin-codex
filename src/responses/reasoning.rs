@@ -1,7 +1,7 @@
 use super::Error;
 use serde_json::{Value, json};
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(super) struct ReasoningSignature {
     raw: String,
     kind: String,

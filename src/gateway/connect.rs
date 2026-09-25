@@ -78,7 +78,9 @@ impl ConnectParser {
     }
 
     pub fn finish(&self) -> Result<(), GatewayError> {
-        if !self.ended || !self.buffer.is_empty() {
+        if !self.ended {
+            Err(GatewayError::new("upstream_truncated_stream"))
+        } else if !self.buffer.is_empty() {
             Err(protocol())
         } else {
             Ok(())
@@ -115,7 +117,10 @@ fn validate_trailer(payload: &[u8]) -> Result<(), GatewayError> {
         ) {
             return Err(protocol());
         }
-        return Err(GatewayError::new(code));
+        return Err(GatewayError::trailer(
+            code,
+            error.get("message").and_then(|v| v.as_str()),
+        ));
     }
     Ok(())
 }

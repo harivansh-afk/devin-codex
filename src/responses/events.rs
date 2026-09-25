@@ -2,6 +2,7 @@ use crate::{proto::Usage, tools::ToolKind};
 use serde_json::{Value, json};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[derive(Clone)]
 pub(super) struct Response {
     pub model: String,
     id: String,

@@ -13,21 +13,8 @@ mod tests;
 
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 
-#[derive(Debug, Clone, thiserror::Error)]
-#[error("gateway request failed ({code})")]
-pub struct GatewayError {
-    pub code: String,
-    pub status: Option<u16>,
-}
-
-impl GatewayError {
-    pub fn new(code: &str) -> Self {
-        Self {
-            code: code.into(),
-            status: None,
-        }
-    }
-}
+mod error;
+pub use error::GatewayError;
 
 fn protocol() -> GatewayError {
     GatewayError::new("upstream_protocol_error")
@@ -38,6 +25,7 @@ pub struct GatewayClient {
     client: reqwest::Client,
     endpoint: reqwest::Url,
     auth: reqwest::header::HeaderValue,
+    pub(crate) diagnostics: Option<std::path::PathBuf>,
 }
 
 impl GatewayClient {
@@ -81,7 +69,14 @@ impl GatewayClient {
             client,
             endpoint: url,
             auth,
+            diagnostics: None,
         })
+    }
+
+    /// Enable private, content-free failure/recovery records for a running adapter.
+    pub fn with_diagnostics(mut self) -> Self {
+        self.diagnostics = crate::diagnostics::path();
+        self
     }
 
     async fn open(&self, request: ChatRequest) -> Result<reqwest::Response, GatewayError> {
@@ -101,10 +96,13 @@ impl GatewayClient {
             .await
             .map_err(http_error)?;
         if response.status() != reqwest::StatusCode::OK {
-            return Err(GatewayError {
-                code: "upstream_http_error".into(),
-                status: Some(response.status().as_u16()),
-            });
+            return Err(GatewayError::http(
+                response.status().as_u16(),
+                response
+                    .headers()
+                    .get("retry-after")
+                    .and_then(|value| value.to_str().ok()),
+            ));
         }
         Ok(response)
     }
