@@ -145,13 +145,14 @@ async fn app_with_models(
 #[tokio::test]
 async fn account_models_route_exact_uids_and_reject_unlisted_variants() {
     let models = Models::parse(&json!({"families":[
-        {"slug":"gpt-6-sol","variants":[{"model_uid":"gpt-6-sol-high"}]},
+        {"slug":"gpt-6-sol","variants":[{"model_uid":"gpt-6-sol-high"},{"model_uid":"gpt-6-sol-low"}]},
         {"slug":"fusion","variants":[{"model_uid":"fusion-claude-fable-5-1-high-sidekick-swe-2-medium"}]}
     ]}))
     .unwrap();
     let (app, calls, task) = app_with_models(true, None, models).await;
     for (alias, effort, uid) in [
         ("devin-gpt-6-sol", "high", "gpt-6-sol-high"),
+        ("gpt-6-sol", "low", "gpt-6-sol-low"),
         (
             "devin-fable-5-1-fusion",
             "medium",
@@ -176,7 +177,7 @@ async fn account_models_route_exact_uids_and_reject_unlisted_variants() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
-    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
     task.abort();
 }
 

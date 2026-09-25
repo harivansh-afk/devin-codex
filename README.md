@@ -50,3 +50,8 @@ selects another binary in either package.
 - [ ] Complete token accounting
 - [ ] Opus harness compatibility
 - [ ] Fusion gateway access
+
+The standalone Responses server can load the same account-checked model catalog with
+`devin-codex serve --compatibility --devin /absolute/path/to/devin --token-file /path/to/token`.
+This enables GPT-6 Sol, Astra, and the other supported account models and reasoning levels.
+Without `--devin`, the server retains its Astra-only behavior. Catalog lookup failures stop startup.

@@ -34,6 +34,9 @@ enum Command {
         /// Translate Codex instructions and tool namespaces (lossy).
         #[arg(long)]
         compatibility: bool,
+        /// Load account-available models through this Devin CLI (otherwise Astra only).
+        #[arg(long)]
+        devin: Option<PathBuf>,
     },
     /// Check a JSON request without sending inference. Use - for stdin.
     Audit { request: PathBuf },
@@ -104,6 +107,7 @@ async fn run(cli: Cli) -> Result<u8, &'static str> {
             port,
             token_file,
             compatibility,
+            devin,
         } => {
             let credentials = config::load_credentials(cli.credentials.as_deref()).map_err(
                 |_| "Cannot load Devin credentials; check the file and deployment origin.",
@@ -111,6 +115,10 @@ async fn run(cli: Cli) -> Result<u8, &'static str> {
             let token = config::load_local_token(token_file.as_deref()).map_err(
                 |_| "Cannot load local token; set DEVIN_CODEX_TOKEN or a private --token-file.",
             )?;
+            let models = match devin {
+                Some(binary) => Models::load(&binary).await?,
+                None => Models::default(),
+            };
             let gateway = GatewayClient::new(&credentials.endpoint, &credentials.api_key)
                 .map_err(|_| "Cannot configure Devin gateway transport.")?;
             let listener =
@@ -129,7 +137,7 @@ async fn run(cli: Cli) -> Result<u8, &'static str> {
                     } else {
                         Mode::Strict
                     },
-                    Models::default(),
+                    models,
                 ),
             )
             .with_graceful_shutdown(session::shutdown())
