@@ -12,6 +12,19 @@ nix profile add git+https://git.harivan.sh/harivansh-afk/devin-codex
 devin-codex
 ```
 
+For live terminal theme changes, use the package with a patched Codex renderer:
+
+```sh
+nix run .#with-terminal-theme
+```
+
+This variant supports Linux and Apple Silicon macOS. It includes Codex 0.154.0
+with terminal color notifications and asynchronous OSC 10/11 replies. Chat backgrounds follow the terminal palette.
+Terminals without color notifications refresh their colors when focus returns.
+Explicit syntax themes, including custom `.tmTheme` files, keep their selected
+colors. The standard package uses the installed Codex. `run --codex PATH`
+selects another binary in either package.
+
 # Development
 
 - [x] Model selection
