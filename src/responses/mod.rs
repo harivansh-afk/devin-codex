@@ -25,6 +25,7 @@ const MAX_ITEMS: usize = 4096;
 #[error("{0}")]
 pub struct Error(pub &'static str);
 
+#[derive(Clone)]
 pub struct Translator {
     mode: Mode,
     response: Response,

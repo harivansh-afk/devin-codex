@@ -120,7 +120,8 @@ async fn run(cli: Cli) -> Result<u8, &'static str> {
                 None => Models::default(),
             };
             let gateway = GatewayClient::new(&credentials.endpoint, &credentials.api_key)
-                .map_err(|_| "Cannot configure Devin gateway transport.")?;
+                .map_err(|_| "Cannot configure Devin gateway transport.")?
+                .with_diagnostics();
             let listener =
                 tokio::net::TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, port))
                     .await

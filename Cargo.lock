@@ -285,7 +285,7 @@ dependencies = [
 
 [[package]]
 name = "devin-codex"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "async-stream",
  "axum",
@@ -294,6 +294,7 @@ dependencies = [
  "clap",
  "flate2",
  "futures-util",
+ "httpdate",
  "nix",
  "prost",
  "rand 0.9.5",
