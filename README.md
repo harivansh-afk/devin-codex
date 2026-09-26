@@ -2,6 +2,8 @@
 
 Use the Codex TUI with Devin inference.
 
+A four-minute Astra-medium benchmark passed all 88 Devin tasks with no observed mixing across up to 10 concurrent instances and measured 0.40–0.63× direct Codex's default-tier completion time (median paired ratios by workload at ten-way concurrency), though long-form output appeared later due to buffering and background `notify()` results still triggered HTTP 422 errors.
+
 Requirements:
 
 - installed Codex (tested: 0.155.1)
