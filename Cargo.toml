@@ -1,6 +1,6 @@
 [package]
 name = "devin-codex"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2024"
 description = "Run Codex with Devin inference"
 publish = false
@@ -27,6 +27,7 @@ uuid = { version = "1", features = ["v4"] }
 zstd = "0.13"
 
 [dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
 tower = { version = "0.5", features = ["util"] }
 
 [target.'cfg(unix)'.dependencies]

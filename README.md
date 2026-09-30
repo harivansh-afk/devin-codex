@@ -62,6 +62,8 @@ Gateway failures are retried inside the adapter, up to four attempts with 1/2/4-
 backoff and jitter. Retries replay the same inference request and discard the failed
 attempt's buffered output, including tool calls and reasoning. Codex's own retries
 remain disabled to avoid multiplying attempts. Cancellation also stops backoff.
+While output is buffered, SSE data heartbeats reset Codex's idle timer every
+15 seconds. Comment-only keepalives do not reset that timer.
 HTTP 408/429/500/502/503/504, transient Connect errors (including `unknown`),
 connection failures, idle timeouts, and truncated streams are eligible. Invalid
 requests, authentication failures, malformed responses, and recognized credit or

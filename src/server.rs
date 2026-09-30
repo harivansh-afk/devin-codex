@@ -209,7 +209,13 @@ fn streaming_response(events: BoxStream<'static, Value>) -> Response {
         Ok::<_, Infallible>(Event::default().event(kind).data(event.to_string()))
     });
     let mut response = Sse::new(stream)
-        .keep_alive(axum::response::sse::KeepAlive::default())
+        // Codex times out waiting for parsed SSE events; comments do not reset it.
+        // A transport-only event keeps buffered generations and retries alive
+        // without exposing partial model output or executable tool calls.
+        .keep_alive(
+            axum::response::sse::KeepAlive::default()
+                .event(Event::default().event("ping").data(r#"{"type":"ping"}"#)),
+        )
         .into_response();
     response
         .headers_mut()
