@@ -379,22 +379,79 @@ fn reject_unreplayable_reasoning() {
 }
 
 #[test]
-fn raw_cache_counters_do_not_invent_total_usage() {
+fn cached_input_counts_toward_context_usage() {
     let mut t = translator();
     t.push(ChatResponse {
         usage: Some(Usage {
             input_tokens: Some(100),
             output_tokens: Some(5),
             cache_read_tokens: Some(80),
-            ..Default::default()
+            cache_write_tokens: Some(20),
         }),
         ..Default::default()
     })
     .unwrap();
     let events = t.finish().unwrap();
     let response = &events.last().unwrap()["response"];
-    assert!(response["usage"].is_null());
+    assert_eq!(response["usage"]["input_tokens"], 200);
+    assert_eq!(response["usage"]["total_tokens"], 205);
+    assert_eq!(
+        response["usage"]["input_tokens_details"]["cached_tokens"],
+        80
+    );
     assert_eq!(response["x_devin_usage"]["cache_read_tokens"], 80);
+}
+
+#[test]
+fn large_cached_history_is_reported_instead_of_leaving_codex_usage_stale() {
+    let mut t = translator();
+    t.push(ChatResponse {
+        usage: Some(Usage {
+            input_tokens: Some(75),
+            output_tokens: Some(7),
+            cache_write_tokens: Some(917408),
+            ..Default::default()
+        }),
+        ..Default::default()
+    })
+    .unwrap();
+    // Empty usage frames must not erase the completed counters.
+    t.push(ChatResponse {
+        usage: Some(Usage::default()),
+        ..Default::default()
+    })
+    .unwrap();
+    let events = t.finish().unwrap();
+    let usage = &events.last().unwrap()["response"]["usage"];
+    assert_eq!(usage["input_tokens"], 917483);
+    assert_eq!(usage["output_tokens"], 7);
+    assert_eq!(usage["total_tokens"], 917490);
+    assert_eq!(
+        events.last().unwrap()["response"]["x_devin_usage"]["cache_write_tokens"],
+        917408
+    );
+}
+
+#[test]
+fn cache_only_input_and_counter_overflow_are_handled() {
+    for (input, cached, expected) in [(None, 80, json!(85)), (Some(u64::MAX), 80, Value::Null)] {
+        let mut t = translator();
+        t.push(ChatResponse {
+            usage: Some(Usage {
+                input_tokens: input,
+                cache_read_tokens: Some(cached),
+                output_tokens: Some(5),
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
+        .unwrap();
+        let events = t.finish().unwrap();
+        assert_eq!(
+            events.last().unwrap()["response"]["usage"]["total_tokens"],
+            expected
+        );
+    }
 }
 
 #[test]

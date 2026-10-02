@@ -82,7 +82,16 @@ impl GatewayError {
         {
             self.trace_id = Some(id.to_owned());
         }
-        // Codes carrying authorization/validation failures stay authoritative.
+        // Devin also uses invalid_argument for this generic provider failure,
+        // including repeatable long-history failures. It proves no bad field and
+        // does not establish that retrying the identical request will recover.
+        if self.code == "invalid_argument"
+            && lower.starts_with("the third-party model provider is experiencing issues and is currently not available.")
+        {
+            self.category = "provider_failure";
+            return;
+        }
+        // Other codes carrying authorization/validation failures stay authoritative.
         if !matches!(
             self.code.as_str(),
             "unknown" | "internal" | "resource_exhausted" | "permission_denied" | "unavailable"
@@ -169,6 +178,9 @@ impl GatewayError {
             }
             "timeout" => "Devin did not respond within the upstream timeout.",
             "connection" => "The connection to Devin ended before a complete response arrived.",
+            "provider_failure" => {
+                "Devin reported a model-provider failure. If this repeats in a long chat, use /compact before retrying; otherwise try again later."
+            }
             _ => "Devin returned an upstream failure without a recognized cause.",
         };
         let unit = if attempts == 1 { "attempt" } else { "attempts" };
