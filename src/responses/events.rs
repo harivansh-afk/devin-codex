@@ -47,18 +47,35 @@ impl Response {
     }
 
     pub fn record_usage(&mut self, usage: Usage) {
+        if usage.input_tokens.is_none()
+            && usage.output_tokens.is_none()
+            && usage.cache_read_tokens.is_none()
+            && usage.cache_write_tokens.is_none()
+        {
+            return;
+        }
         self.gateway_usage["input_tokens"] = json!(usage.input_tokens);
         self.gateway_usage["output_tokens"] = json!(usage.output_tokens);
         self.gateway_usage["cache_read_tokens"] = json!(usage.cache_read_tokens);
         self.gateway_usage["cache_write_tokens"] = json!(usage.cache_write_tokens);
-        self.usage = Value::Null;
-        // Cache/input overlap is unverified. Preserve counters, not guesses.
-        if usage.cache_read_tokens.unwrap_or(0) == 0
-            && usage.cache_write_tokens.unwrap_or(0) == 0
-            && let (Some(input), Some(output)) = (usage.input_tokens, usage.output_tokens)
-            && let Some(total) = input.checked_add(output)
+        // Devin reports uncached input separately from cache reads and writes.
+        // Codex needs their sum to account for history and trigger compaction.
+        if let Some(output) = usage.output_tokens
+            && (usage.input_tokens.is_some()
+                || usage.cache_read_tokens.is_some()
+                || usage.cache_write_tokens.is_some())
         {
-            self.usage = json!({"input_tokens":input,"output_tokens":output,"total_tokens":total});
+            self.usage = usage
+                .input_tokens
+                .unwrap_or(0)
+                .checked_add(usage.cache_read_tokens.unwrap_or(0))
+                .and_then(|n| n.checked_add(usage.cache_write_tokens.unwrap_or(0)))
+                .and_then(|input| input.checked_add(output).map(|total| (input, total)))
+                .map(|(input, total)| {
+                    json!({"input_tokens":input,"output_tokens":output,"total_tokens":total,
+                    "input_tokens_details":{"cached_tokens":usage.cache_read_tokens.unwrap_or(0)}})
+                })
+                .unwrap_or(Value::Null);
         }
     }
 

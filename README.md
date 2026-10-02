@@ -79,6 +79,13 @@ scheduling. It never records upstream free text, prompts, tool output, or creden
 A full or unwritable log does not interrupt inference. Unknown causes stay
 unclassified; the adapter cannot reconstruct details already discarded by older versions.
 
+Input usage includes Devin's uncached, cache-read and cache-write token counts so
+Codex can compact long conversations automatically. Older adapters omitted usage
+on cached turns, leaving the context display stale and allowing oversized histories
+to fail with Devin's generic `invalid_argument` provider error. Run `/compact` in
+an affected saved conversation before continuing; restarting alone retains the
+oversized history. The generic provider error does not identify a rejected field.
+
 Run `cargo test` for local regression tests. The opt-in
 `cargo test --test live_recovery -- --ignored` checks a real Devin tool round trip
 through injected gateway failures, using inference credits without executing model-generated code.

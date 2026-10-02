@@ -1,6 +1,32 @@
 use super::*;
 
 #[test]
+fn generic_provider_rejection_is_not_reported_as_a_known_bad_argument() {
+    let error = GatewayError::trailer(
+        "invalid_argument",
+        Some(
+            "The third-party model provider is experiencing issues and is currently not available. Please try this model again later. (trace ID: 0123456789abcdef0123456789abcdef)",
+        ),
+    );
+    assert_eq!(error.category, "provider_failure");
+    assert!(!error.retryable());
+    assert!(error.message(1).contains("/compact"));
+    assert!(
+        !error
+            .message(1)
+            .contains("retrying it unchanged will not help")
+    );
+    assert_eq!(
+        error.trace_id.as_deref(),
+        Some("0123456789abcdef0123456789abcdef")
+    );
+    let invalid = GatewayError::trailer("invalid_argument", Some("invalid PRIVATE field"));
+    assert_eq!(invalid.category, "invalid_request");
+    assert!(!invalid.retryable());
+    assert!(!invalid.message(1).contains("PRIVATE"));
+}
+
+#[test]
 fn known_causes_and_trace_are_retained_without_upstream_text() {
     let error = GatewayError::trailer(
         "unknown",
