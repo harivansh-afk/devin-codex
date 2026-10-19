@@ -1,5 +1,5 @@
 //! Private runtime configuration. Credentials never come from HTTP callers.
-use rand::RngCore;
+use rand::Rng;
 use serde::Deserialize;
 use std::{
     env, fs,
