@@ -120,6 +120,11 @@ impl Session {
             use std::os::unix::process::CommandExt;
             command.as_std_mut().process_group(0);
         }
+        let shutdown = shutdown();
+        tokio::pin!(shutdown);
+        if futures_util::poll!(&mut shutdown).is_ready() {
+            return Ok(130);
+        }
         let mut child = command
             .kill_on_drop(true)
             .spawn()
@@ -131,7 +136,7 @@ impl Session {
             status = child.wait() => {
                 Ok(status.map_err(|_| "Cannot wait for Codex.")?.code().unwrap_or(1) as u8)
             }
-            _ = shutdown() => {
+            _ = &mut shutdown => {
                 #[cfg(unix)]
                 if let Some(group) = &group {
                     group.signal(nix::sys::signal::Signal::SIGTERM);
